@@ -48,16 +48,16 @@ class Conversion:
         return celsius + 273.15
 
     def convert_Minutes_to_Seconds(minutes):
-        return minutes * 60.0
+        return minutes * 60
 
     def convert_Liters_to_CubicMeters(value):
-        liters_per_hour = value * 100.0
+        liters_per_hour = value * 10000
         cubic_meters_per_hour = liters_per_hour * 0.001
         cubic_meters_per_second = cubic_meters_per_hour / 3600
         return cubic_meters_per_second
 
     def convert_ToPascals(value):
-        return value / 10.0
+        return value * 10
     
     def convert_ToVolts(value):
         return value / 1000.0
