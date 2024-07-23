@@ -12,7 +12,6 @@ Firmware Verson: 1.0.3-2
 
 ## Notes
 
-
 Bluetooth LE - Indications and Notifications
 
 - Indications are notifications which need to be acknoledged by the client before the next indication is sent
@@ -30,10 +29,13 @@ Bluetooth LE - Indications and Notifications
 
 // Check 001
 2. Enables indication on 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x16)
+
+// Turn off streaming
 3. Writes a value to UUID 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x15)
         Value: 0d00
 4. Receives indication on UUID 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x15)
         Value: 000d01
+
 5. Writes to UUID 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x15)
         Value: 28000301
 6. Receives indications on handle 0x0015, which are confirmed:
@@ -166,6 +168,11 @@ Size: 10 byte attribute (8 byte value)
 Header: 0x0a00
 
 Data is Liters per Hour * 100. This can be converted to GPH by multiplying by 0.00267
+
+5617 = 15.0 GPH
+     = 56.17 LPH
+100  = 1 LPH
+
 
 ### Unknown (00000108-0000-1000-8000-ec55f9f5b963)
 
