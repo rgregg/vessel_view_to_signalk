@@ -58,16 +58,18 @@ class Conversion:
 
     def convert_ToPascals(value):
         return value / 10.0
+    
+    def convert_ToVolts(value):
+        return value / 1000.0
 
 class VesselViewMobileReceiver:
 
-    def __init__(self):
-        signalk_root_path = "propulsion"
-        engine_id = "0"
-        signalk_parameter_map = {
+    engine_id = "0"
+    signalk_root_path = "propulsion"
+    signalk_parameter_map = {
             UUIDs.ENGINE_RPM_UUID: { "path": "revolutions", "convert": Conversion.convert_RPM_to_Hz },
             UUIDs.COOLANT_TEMPERATURE_UUID: { "path": "temperature", "convert": Conversion.convert_Celsius_to_Kelvin  },
-            UUIDs.BATTERY_VOLTAGE_UUID: { "path": "alternatorVoltage" },
+            UUIDs.BATTERY_VOLTAGE_UUID: { "path": "alternatorVoltage", "convert": Conversion.convert_ToVolts },
             UUIDs.ENGINE_RUNTIME_UUID: { "path": "runTime", "convert": Conversion.convert_Minutes_to_Seconds },
             UUIDs.CURRENT_FUEL_FLOW_UUID: {"path": "fuel.rate", "convert": Conversion.convert_Liters_to_CubicMeters},
             UUIDs.OIL_PRESSURE_UUID: { "path": "oilPressure", "convert": Conversion.convert_ToPascals },
@@ -79,15 +81,10 @@ class VesselViewMobileReceiver:
             UUIDs.UNK_10D_UUID: {},
             UUIDs.DEVICE_201_UUID: {}
         }
-        notification_futures_queue = { }
+    notification_futures_queue = { }
 
-    @property
-    def engine_id(self):
-        return self.engine_id
-    
-    @engine_id.setter
-    def set_engine_id(self, value):
-        self.engine_id = value
+    def __init__(self):
+        logger.debug("Created a new instance of decoder class")        
 
     async def run(self, args: argparse.Namespace):
         loop = asyncio.get_event_loop()
@@ -118,7 +115,7 @@ class VesselViewMobileReceiver:
 
             # run until the device is disconnected or
             # the operation is terminated
-            logging.debug("running event loop forever")
+            logger.debug("running event loop forever")
             loop.run_forever()
 
     """
@@ -128,7 +125,7 @@ class VesselViewMobileReceiver:
         logger.debug("enabling notifications on data chars")
 
         for uuid in self.signalk_parameter_map:
-            logging.debug("enabling notification on {0}", uuid)
+            logger.debug("enabling notification on %s", uuid)
             await client.start_notify(uuid, self.notification_handler)
 
     """
@@ -137,7 +134,7 @@ class VesselViewMobileReceiver:
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         #Simple notification handler which prints the data received
         uuid = characteristic.uuid
-        logger.info("Received notification from BLE - UUID: {0}}", uuid)
+        logger.info("Received notification from BLE - UUID: %s", uuid)
 
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
@@ -152,16 +149,18 @@ class VesselViewMobileReceiver:
             if "convert" in options:
                 convert = options["convert"]
                 new_value = convert(value)
-                logging.debug("Converted value from {0} to {1}", value, new_value)
+                logger.debug("Converted value from %s to %s", value, new_value)
             else:
                 new_value = value
-                logging.debug("No data conversion: {0}", value)
+                logger.debug("No data conversion: %s", value)
 
             if "path" in options:        
                 path = self.signalk_root_path + "." + self.engine_id + "." + options["path"]
+                logger.debug("Publishing value to SignalK %s", new_value)
                 self.publish_to_signalk(path, new_value)
 
         else:
+            logger.debug("Triggering notification for %s with data %s", uuid, data)
             self.trigger_event_listener(uuid, data)
 
     """
@@ -169,20 +168,20 @@ class VesselViewMobileReceiver:
     the header bytes and converts the value to an integer with 
     little endian byte order
     """
-    def parse_data_from_device(data):
-        logger.debug("Recieved data from device: {0}" ,data)
+    def parse_data_from_device(self, data):
+        logger.debug("Recieved data from device: %s" ,data)
         data = data[2:]  # remove the header bytes
         value = int.from_bytes(data, byteorder='little')
-        logger.debug("Converted to value: {0}", value)
+        logger.debug("Converted to value: %s", value)
         return value
 
     """
     Submits the latest information received from the device to the SignalK
     websocket
     """
-    async def publish_to_signalk(self, path, data):
+    def publish_to_signalk(self, path, data):
         # do something with the data and signalk 
-        logging.info("Publishing delta to path: '{0}', value '{1}'", path, data)
+        logger.info("Publishing delta to path: '%s', value '%s'", path, data)
         return
 
     """
@@ -203,17 +202,17 @@ class VesselViewMobileReceiver:
 
         data = bytes([0x10, 0x27, 0x0])
         result = self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logging.info("Response from 0111: {0}", result)
+        logger.info("Response from 0111: %s", result)
         # expected result = 00102701010001
 
         data = bytes([0xCA, 0x0F, 0x0])
         result = self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logging.info("Response from 0111: {0}", result)
+        logger.info("Response from 0111: %s", result)
         # expected result = 00ca0f01010000
 
         data = bytes([0xC8, 0x0F, 0x0])
         result = self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logging.info("Response from 0111: {0}", result)
+        logger.info("Response from 0111: %s", result)
         # expected result = 00c80f01040000000000
 
     """
@@ -239,7 +238,7 @@ class VesselViewMobileReceiver:
 
         # Response comes in a series of indications - we need to special case this.
 
-        logging.info("Device Configuration Response: {0}", response)
+        logger.info("Device Configuration Response: %s", response)
 
     """
     Writes data to the charateristic and waits for a notification that the
@@ -248,14 +247,14 @@ class VesselViewMobileReceiver:
     async def request_configuration_data(self, client: BleakClient, uuid: str, data: bytes):
         
         # add an event lisener to the queue
-        logging.debug("writing data to char {0} with value {1}", uuid, data)
+        logger.debug("writing data to char %s with value %s", uuid, data)
         future_data = self.add_event_listener(uuid)
         await client.write_gatt_char(uuid, data, response=True)
 
         # wait for an indication to arrive on the UUID specified, and then
         # return that data to the caller here.
         result = await future_data
-        logging.debug("received future data {0} on {1}", result, uuid)
+        logger.debug("received future data %s on %s", result, uuid)
         return result
 
     """
@@ -267,9 +266,12 @@ class VesselViewMobileReceiver:
         events = []
         if uuid in self.notification_futures_queue:
             events = self.notification_futures_queue[uuid]
+        else:
+            self.notification_futures_queue[uuid] = events
         
         event = asyncio.Future()
         events.append(event)
+        
         return event
 
     """
@@ -277,8 +279,11 @@ class VesselViewMobileReceiver:
     """
     def trigger_event_listener(self, uuid: str, data: bytes):
         # TODO: Do we need to add locking around this queue?
-        futures = self.notification_futures_queue[uuid]
-        del self.notification_futures_queue[uuid]
+        if (uuid not in self.notification_futures_queue):
+            futures = []
+        else:
+            futures = self.notification_futures_queue[uuid]
+            del self.notification_futures_queue[uuid]
 
         for future in futures:
             future.set_result(data)
