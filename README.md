@@ -6,3 +6,4 @@ to receive the data from the VVM via Bluetooth into a Raspberry Pi 4 that I had 
 The application integrates with the SignalK API to publish data received from the Vessel View Mobile devices
 into a Signal K server, which can then send the data to other devices connected to the network.
 
+** This is a work in progress -- while I have decoded some of the protocol I do not yet have a working implementation **
