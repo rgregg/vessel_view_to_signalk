@@ -1,29 +1,39 @@
-
 import asyncio
 import websockets
-import requests
 import json
+import logging
+import uuid
 
-# uri = "ws://localhost:3000/signalk/v1/stream?subscribe=none"
+logger = logging.getLogger(__name__)
 
 class SignalKClient:
-    def __init__(self, webhook_url, api_url):
+    def __init__(self, webhook_url):
         self.webhook_url = webhook_url
-        self.api_url = api_url
-        self.callbacks = []
         self.websocket = None
-
-    def add_callback(self, callback):
-        """Adds a callback to be called when new data is received."""
-        self.callbacks.append(callback)
 
     async def connect_websocket(self):
         """Connect to the Signal K server using a websocket."""
-        self.websocket = websockets.connect(self.webhook_url)
-        async with websockets.connect(self.webhook_url) as websocket:
-            while True:
-                data = await websocket.recv()
-                self.handle_data(data)
+        logger.info("Connecting to SignalK: %s", self.webhook_url)
+        self.websocket = await websockets.connect(self.webhook_url)
+
+    async def run(self, task_group):
+        await self.connect_websocket()
+        logger.info("Connected to websocket")
+        
+        while True:
+            msg = await self.websocket.recv()
+            logger.debug("WS RECV: %s", msg)
+            # Perform some task if condition is met
+
+    async def authenticate(self, username, password):
+        data = { 
+            "requestId": self.generate_request_id(),
+            "login": {
+                "username": username,
+                "password": password
+            }
+        }
+        await self.websocket.send(json.dumps(data))
 
     def handle_data(self, data):
         """Handles incoming data and calls the registered callbacks."""
@@ -32,36 +42,33 @@ class SignalKClient:
             for callback in self.callbacks:
                 callback(json_data['path'], json_data['value'])
         except (KeyError, json.JSONDecodeError) as e:
-            print(f"Error handling data: {e}")
+            logger.error(f"Error handling data: {e}")
 
-    def start(self):
-        """Start the websocket connection."""
-        asyncio.get_event_loop().run_until_complete(self.connect_websocket())
+    def generate_request_id(self):
+        return str(uuid.uuid4())
+
+    def generate_delta(self, path, value):
+        delta = {
+            "requestId": self.generate_request_id(),
+            "context": "vessels.self",
+            "updates": [
+                {
+                    "values": [
+                        {
+                            "path": path,
+                            "value": value
+                        }
+                    ]
+                }
+            ]
+        }
+        return delta
+
+    async def publish_delta(self, path, value):
+        logger.info(f"Publishing delta: {value} to {path}")
+        delta = self.generate_delta(path, value)
+        await self.websocket.send(json.dumps(delta))
 
 
-    
-
-    def publish_delta(self, path, value):
-            """Publish a new delta to the Signal K server."""
-            delta = {
-                "context": "vessels.self",
-                "updates": [
-                    {
-                        "values": [
-                            {
-                                "path": path,
-                                "value": value
-                            }
-                        ]
-                    }
-                ]
-            }
-            headers = {'Content-Type': 'application/json'}
-            try:
-                response = requests.post(self.api_url, data=json.dumps(delta), headers=headers)
-                response.raise_for_status()
-                print(f"Successfully published delta: {delta}")
-            except requests.exceptions.RequestException as e:
-                print(f"Failed to publish delta: {e}")
 
 

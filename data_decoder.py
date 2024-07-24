@@ -6,6 +6,8 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.uuids import normalize_uuid_16, uuid16_dict
 
+from signalk import SignalKClient
+
 logger = logging.getLogger(__name__)
 
 class UUIDs:
@@ -41,25 +43,25 @@ class UUIDs:
     UNK_10D_UUID = "0000010d-0000-1000-8000-ec55f9f5b963"
 
 class Conversion:
-    def convert_RPM_to_Hz(rpm):
+    def to_hertz(rpm):
         return rpm / 60.0
 
-    def convert_Celsius_to_Kelvin(celsius):
+    def to_kelvin(celsius):
         return celsius + 273.15
 
-    def convert_Minutes_to_Seconds(minutes):
+    def to_seconds(minutes):
         return minutes * 60
 
-    def convert_Liters_to_CubicMeters(value):
+    def to_cubic_meters(value):
         liters_per_hour = value * 10000
         cubic_meters_per_hour = liters_per_hour * 0.001
         cubic_meters_per_second = cubic_meters_per_hour / 3600
         return cubic_meters_per_second
 
-    def convert_ToPascals(value):
+    def to_pascals(value):
         return value * 10
     
-    def convert_ToVolts(value):
+    def to_volts(value):
         return value / 1000.0
 
 class VesselViewMobileReceiver:
@@ -67,12 +69,12 @@ class VesselViewMobileReceiver:
     engine_id = "0"
     signalk_root_path = "propulsion"
     signalk_parameter_map = {
-            UUIDs.ENGINE_RPM_UUID: { "path": "revolutions", "convert": Conversion.convert_RPM_to_Hz },
-            UUIDs.COOLANT_TEMPERATURE_UUID: { "path": "temperature", "convert": Conversion.convert_Celsius_to_Kelvin  },
-            UUIDs.BATTERY_VOLTAGE_UUID: { "path": "alternatorVoltage", "convert": Conversion.convert_ToVolts },
-            UUIDs.ENGINE_RUNTIME_UUID: { "path": "runTime", "convert": Conversion.convert_Minutes_to_Seconds },
-            UUIDs.CURRENT_FUEL_FLOW_UUID: {"path": "fuel.rate", "convert": Conversion.convert_Liters_to_CubicMeters},
-            UUIDs.OIL_PRESSURE_UUID: { "path": "oilPressure", "convert": Conversion.convert_ToPascals },
+            UUIDs.ENGINE_RPM_UUID: { "path": "revolutions", "convert": Conversion.to_hertz },
+            UUIDs.COOLANT_TEMPERATURE_UUID: { "path": "temperature", "convert": Conversion.to_kelvin  },
+            UUIDs.BATTERY_VOLTAGE_UUID: { "path": "alternatorVoltage", "convert": Conversion.to_volts },
+            UUIDs.ENGINE_RUNTIME_UUID: { "path": "runTime", "convert": Conversion.to_seconds },
+            UUIDs.CURRENT_FUEL_FLOW_UUID: {"path": "fuel.rate", "convert": Conversion.to_cubic_meters},
+            UUIDs.OIL_PRESSURE_UUID: { "path": "oilPressure", "convert": Conversion.to_pascals },
             UUIDs.UNK_105_UUID: {},
             UUIDs.UNK_108_UUID: {},
             UUIDs.UNK_109_UUID: {},
@@ -83,18 +85,19 @@ class VesselViewMobileReceiver:
         }
     notification_futures_queue = { }
 
-    def __init__(self):
-        logger.debug("Created a new instance of decoder class")        
+    def __init__(self, device_address):
+        logger.debug("Created a new instance of decoder class")
+        self.device_address = device_address
 
-    async def run(self, args: argparse.Namespace):
+
+    async def run(self, task_group):
         loop = asyncio.get_event_loop()
 
         logger.info("starting scan...")
-        device = await BleakScanner.find_device_by_address(
-            args.address, cb=dict(use_bdaddr=args.macos_use_bdaddr)
-        )
+        device = await BleakScanner.find_device_by_address(self.device_address)
         if device is None:
-            logger.error("could not find device with address '%s'", args.address)
+            logger.error("could not find device with address '%s'", self.device_address)
+            task_group._abort()
             return
         
         logger.info("connecting to device...")
@@ -324,27 +327,13 @@ class VesselViewMobileReceiver:
         services = await client.services
         logger.info("Services: {0}".format("".join(map(chr, services))))
 
-if __name__ == "__main__":
+def parse_arguments():
     parser = argparse.ArgumentParser()
-
-    # device_group = parser.add_mutually_exclusive_group(required=True)
-
-    # device_group.add_argument(
-    #     "--name",
-    #     metavar="<name>",
-    #     help="the name of the bluetooth device to connect to",
-    # )
     parser.add_argument(
         "--address",
         metavar="<address>",
         help="the address of the bluetooth device to connect to",
         required=True
-    )
-
-    parser.add_argument(
-        "--macos-use-bdaddr",
-        action="store_true",
-        help="when true use Bluetooth address instead of UUID on macOS",
     )
 
     parser.add_argument(
@@ -361,13 +350,24 @@ if __name__ == "__main__":
         help="sets the log level to debug",
     )
 
-    args = parser.parse_args()
+    return parser.parse_args()
 
+async def main():
+    receiver = VesselViewMobileReceiver(args.address)
+    signalk = SignalKClient(args.signalk_ws)
+
+    async with asyncio.TaskGroup() as tg:
+        task1 = tg.create_task(receiver.run(tg))
+        task2 = tg.create_task(signalk.run(tg))
+    print(f"Both tasks have completed now: {task1.result()}, {task2.result()}")
+
+if __name__ == "__main__":
+
+    args = parse_arguments()
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
         level=log_level,
         format="%(asctime)-15s %(name)-8s %(levelname)s: %(message)s",
     )
 
-    client = VesselViewMobileReceiver()
-    asyncio.run(client.run(args))
+    asyncio.run(main())
