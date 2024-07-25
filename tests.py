@@ -1,4 +1,4 @@
-from data_decoder import UUIDs, VesselViewMobileReceiver
+from ble_connection import UUIDs, VesselViewMobileReceiver
 import logging
 from bleak import BleakGATTCharacteristic
 
