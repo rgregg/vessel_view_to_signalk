@@ -1,6 +1,2 @@
 bleak==0.22.2
 websockets==12.0
-pyobjc-core==10.3.1
-pyobjc-framework-Cocoa==10.3.1
-pyobjc-framework-CoreBluetooth==10.3.1
-pyobjc-framework-libdispatch==10.3.1

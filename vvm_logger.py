@@ -3,11 +3,44 @@ import sys
 import signal
 import logging
 import asyncio
+import os
 
 from signalk_publisher import SignalKPublisher
 from ble_connection import VesselViewMobileReceiver
 
 logger = logging.getLogger("vvm_logger")
+
+class VVMConfig:
+    def __init__(self):
+        self._signalk_websocket_url = "ws://localhost:3000/signalk/v1/stream?subscribe=none"
+        self._ble_device_address = None
+        self._debug = False
+    
+    @property
+    def signalk_websocket_url(self):
+        return self._signalk_websocket_url
+    
+    @signalk_websocket_url.setter
+    def signalk_websocket_url(self, value):
+        self._signalk_websocket_url = value
+    
+    @property
+    def ble_device_address(self):
+        return self._ble_device_address
+    
+    @ble_device_address.setter
+    def ble_device_address(self, value):
+        self._ble_device_address = value
+    
+    @property
+    def debug(self):
+        return self._debug
+    
+    @debug.setter
+    def debug(self, value):
+        self._debug = value
+
+
 
 class VesselViewMobileDataRecorder:
     
@@ -20,23 +53,27 @@ class VesselViewMobileDataRecorder:
         # handle sigint gracefully
         signal.signal(signal.SIGINT, self.signal_handler)
 
+        config = VVMConfig()
+
+        # parse env vars
+        self.parse_env_variables(config)
+
         # parse arguments
-        args = self.parse_arguments()
+        self.parse_arguments(config)
 
         # enable logging
-        log_level = logging.DEBUG if args.debug else logging.INFO
+        log_level = logging.DEBUG if config.debug else logging.INFO
         logging.basicConfig(
             level=log_level,
             format="%(asctime)-15s %(name)-8s %(levelname)s: %(message)s",
         )
 
         # start the main loops
-        if args.device_address is not None and not args.skip_ble:
-            self.ble_connection = VesselViewMobileReceiver(args.device_address, self.publish_data_func)
+        if config.ble_device_address is not None:
+            self.ble_connection = VesselViewMobileReceiver(config.ble_device_address, self.publish_data_func)
             
-        if args.signalk_websocket_url is not None:
-            self.signalk_socket = SignalKPublisher(args.signalk_websocket_url)
-        
+        if config.signalk_websocket_url is not None:
+            self.signalk_socket = SignalKPublisher(config.signalk_websocket_url)
 
         background_tasks = set()
         async with asyncio.TaskGroup() as tg:
@@ -54,7 +91,7 @@ class VesselViewMobileDataRecorder:
         if self.signalk_socket is not None:
             self.signalk_socket.publish_delta(path, value)
 
-    def parse_arguments(self):
+    def parse_arguments(self, config: VVMConfig):
         parser = argparse.ArgumentParser()
         parser.add_argument(
             "-a",
@@ -68,7 +105,6 @@ class VesselViewMobileDataRecorder:
             "--signalk-websocket-url",
             metavar="<websocket url>",
             help="The URL for the signalk websocket service.",
-            default="ws://localhost:3000/signalk/v1/stream?subscribe=none",
         )
         
         parser.add_argument(
@@ -78,13 +114,14 @@ class VesselViewMobileDataRecorder:
             help="sets the log level to debug",
         )
 
-        parser.add_argument(
-            "--skip-ble",
-            action="store_true",
-            help="Skip connecting to the BLE device for testing/debugging"
-        )
+        args = parser.parse_args()
+        if args.signalk_websocket_url is not None:
+            config.signalk_websocket_url = args.signalk_websocket_url
+        if args.device_address is not None:
+            config.ble_device_address = args.device_address
+        if args.debug is not None:
+            config.debug = args.debug
 
-        return parser.parse_args()
 
     def signal_handler(self, sig, frame):
         logger.info("Gracefully shutting down...")
@@ -98,6 +135,19 @@ class VesselViewMobileDataRecorder:
 
         logger.info("Exiting")
         sys.exit(0)
+
+    def parse_env_variables(self, config : VVMConfig):
+        signalk_url = os.getenv("VVM_SIGNALK_URL")
+        if signalk_url is not None:
+            config.signalk_websocket_url = signalk_url
+
+        ble_device_address = os.getenv("VVM_DEVICE_ADDRESS")
+        if ble_device_address is not None:
+            config.ble_device_address = ble_device_address
+
+        debug = os.getenv("VVM_DEBUG")
+        if debug is not None:
+            config.debug = debug
 
 
 if __name__ == "__main__":
