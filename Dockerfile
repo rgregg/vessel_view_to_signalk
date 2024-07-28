@@ -9,4 +9,6 @@ RUN ["pip", "install", "-r", "requirements.txt"]
 COPY *.py ./
 ADD entrypoint.sh ./
 
+RUN ["mkdir", "-p", "/logs"]
+
 CMD ["./entrypoint.sh"] 
