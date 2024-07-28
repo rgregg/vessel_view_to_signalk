@@ -41,6 +41,7 @@ class VesselViewMobileReceiver:
         self.cancel_signal = asyncio.Future()
         self.rescan_signal = asyncio.Future()
         self.publish_delta_func = publish_delta_func
+        self.last_values = {}
 
     """
     Triggers scanning for the BLE hardware device if there is no connection to the device currently available. This can be
@@ -82,8 +83,8 @@ class VesselViewMobileReceiver:
 
             # Run until the device is disconnected or the process is cancelled
             logger.info(f"Found BLE device {self.device} ")
-            async with BleakClient( self.device, 
-                                    disconnected_callback=self.device_disconnected
+            async with BleakClient( self.device
+#                                    disconnected_callback=self.device_disconnected()
                                     ) as client:
                 logger.debug("Connected.")
 
@@ -102,7 +103,7 @@ class VesselViewMobileReceiver:
                 # run until the device is disconnected or
                 # the operation is terminated
                 self.cancel_signal = asyncio.Future()
-                loop.run_until_complete(self.cancel_signal)
+                await self.cancel_signal
             
             self.device = None
         #end of self.abort loop
@@ -119,7 +120,7 @@ class VesselViewMobileReceiver:
     Disconnect from the BLE device and clean up anything we were doing to close down the loop
     """
     async def close(self):
-        logger.info("Disconnecting from bluetooth device...")            
+        logger.info("Disconnecting from bluetooth device...")
         self.abort = True
         self.rescan_signal.done()  # cancels the wait for a new device
         self.cancel_signal.done()  # cancels the loop if we have a device and disconnects
@@ -135,13 +136,15 @@ class VesselViewMobileReceiver:
             logger.debug("enabling notification on %s", uuid)
             await client.start_notify(uuid, self.notification_handler)
 
+        self.last_values = {}
+
     """
     Handles BLE notifications and indications
     """
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         #Simple notification handler which prints the data received
         uuid = characteristic.uuid
-        logger.info("Received notification from BLE - UUID: %s", uuid)
+        logger.debug(f"Received notification from BLE - UUID: {uuid}; data: {data.hex()}")
 
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
@@ -163,12 +166,20 @@ class VesselViewMobileReceiver:
 
             if "path" in options:        
                 path = self.signalk_root_path + "." + self.engine_id + "." + options["path"]
-                logger.debug("Publishing value to SignalK %s", new_value)
+                logger.debug(f"Publishing value {new_value} to path '{path}'")
                 self.publish_to_signalk(path, new_value)
-
+            else:
+                logger.debug(f"No path found for uuid: {uuid}")
+            
+            self.last_values[uuid] = new_value
+            
         else:
             logger.debug("Triggering notification for %s with data %s", uuid, data)
             self.trigger_event_listener(uuid, data)
+
+    def dump_last_values(self):
+        logger.info(','.join(self.last_values.values()))        
+
 
     """
     Parses the byte stream from a device notification, strips
@@ -186,10 +197,13 @@ class VesselViewMobileReceiver:
     Submits the latest information received from the device to the SignalK
     websocket
     """
-    async def publish_to_signalk(self, path, value):
-        logger.info("Publishing delta to path: '%s', value '%s'", path, value)
+    def publish_to_signalk(self, path, value):
+        logger.debug("Publishing delta to path: '%s', value '%s'", path, value)
         if self.publish_delta_func is not None:
-            await self.publish_delta_func(path, value)
+            loop = asyncio.get_event_loop()
+            loop.create_task(self.publish_delta_func(path, value))
+        else:
+            logging.info("Cannot publish to signalk")
 
     """
     Sets up the VVM based on the patters from the mobile application. This is likely
@@ -205,27 +219,27 @@ class VesselViewMobileReceiver:
 
         # enable indiciations on 001
         await self.set_streaming_mode(client, enabled=False)
-        config = await self.request_device_config()
+        config = await self.request_device_config(client)
 
         data = bytes([0x10, 0x27, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 111: %s, expected: 00102701010001", result)
+        logger.info("Response from 111: %s, expected: 00102701010001", result.hex())
         # expected result = 00102701010001
 
         data = bytes([0xCA, 0x0F, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 0111: %s", result)
+        logger.info("Response from 0111: %s", result.hex())
         # expected result = 00ca0f01010000
 
         data = bytes([0xC8, 0x0F, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 0111: %s", result)
+        logger.info("Response from 0111: %s", result.hex())
         # expected result = 00c80f01040000000000
 
     """
     Enable or disable engine data streaming via characteristic notifications
     """
-    async def set_streaming_mode(client: BleakClient, enabled: bool):    
+    async def set_streaming_mode(self, client: BleakClient, enabled):
         if enabled:
             data = bytes([0xD, 0x1])
         else:
@@ -240,6 +254,7 @@ class VesselViewMobileReceiver:
     """
     async def request_device_config(self, client: BleakClient):
         
+        logger.info("Requesting device configuration data")
         await client.start_notify(UUIDs.DEVICE_CONFIG_UUID, self.notification_handler)
         
         # Requests the initial data dump from 001
@@ -253,11 +268,15 @@ class VesselViewMobileReceiver:
         try:
             async with asyncio.timeout(10):
                 await client.write_gatt_char(uuid, data, response=True)
-                result_data = await asyncio.gather(future_data)
-                logger.info(f"Device Configuration Response: {result_data}")
-                return result_data
+                result_data = await asyncio.gather(*future_data)
+
+                result_hex = [ d.hex()  for d in result_data]
+                result = '\n'.join(result_hex)
+
+                logger.info(f"Device Configuration Response: {result}")
+                return result
         except TimeoutError:
-            logger.info("timeout waiting for configuration data to return")
+            logger.debug("timeout waiting for configuration data to return")
             return None
        
 
@@ -267,8 +286,10 @@ class VesselViewMobileReceiver:
     """
     async def request_configuration_data(self, client: BleakClient, uuid: str, data: bytes):
         
+        await client.start_notify(uuid, self.notification_handler)
+
         # add an event lisener to the queue
-        logger.debug("writing data to char %s with value %s", uuid, data)
+        logger.debug("writing data to char %s with value %s", uuid, data.hex())
 
         future_data_result = self.data_for_uuid(uuid)
         await client.write_gatt_char(uuid, data, response=True)
@@ -279,10 +300,12 @@ class VesselViewMobileReceiver:
         try:
             async with asyncio.timeout(5):
                 result = await future_data_result
-                logger.debug("received future data %s on %s", result, uuid)
+                logger.debug("received future data %s on %s", result.hex(), uuid)
                 return result
         except TimeoutError:
-            logger.info("timeout waiting for configuration data to return")
+            logger.debug("timeout waiting for configuration data to return")
+        finally:
+            await client.stop_notify(uuid)
 
 
     """
@@ -290,13 +313,18 @@ class VesselViewMobileReceiver:
     """
     def data_for_uuid(self, uuid: str, key = None):
         
+        logger.debug("future promise for data on uuid: %s, key: %s", uuid, key)
+
         id = uuid
         if key is not None:
             id = f"{uuid}+{key}"
-        
+
+        logger.debug("future promise id: %s", id)        
         if id in self.notification_futures_queue:
+            logger.debug("key already has a promise waiting")
             return self.notification_futures_queue[id]
 
+        logger.debug("key is a new promise")
         # create a new future and save it for later
         future = asyncio.Future()
         self.notification_futures_queue[id] = future
@@ -308,19 +336,26 @@ class VesselViewMobileReceiver:
     """
     def trigger_event_listener(self, uuid: str, data: bytes):
         
+        logger.debug(f"triggering event listener for {uuid} with data: {data}")
+
         if uuid in self.notification_futures_queue:
             future = self.notification_futures_queue[uuid]
             del self.notification_futures_queue[uuid]
             future.set_result(data)
 
         # handle promises for data based on the uuid + first byte of the response
-        key = data[0]
-        id = f"{uuid}+{key}"
-        if id in self.notification_futures_queue:
-            future = self.notification_futures_queue[id]
-            del self.notification_futures_queue[id]
-            future.set_result(data)
-        
+        try:
+            key = int(data[0])
+            id = f"{uuid}+{key}"
+            logger.debug(f"checking for notification handler on key: {key}, id: {id}")
+            if id in self.notification_futures_queue:
+                future = self.notification_futures_queue[id]
+                del self.notification_futures_queue[id]
+                future.set_result(data)
+        except TypeError:
+            return
+        except IndexError:
+            return
 
     """
     Read data from the BLE device with consistent error handling
@@ -343,12 +378,13 @@ class VesselViewMobileReceiver:
     Retrieves the BLE standard data for the device
     """
     async def retrieve_device_info(self, client: BleakClient):
-        system_id = await self.read_char(client, UUIDs.SYSTEM_ID_UUID)
-        logger.info(
-            "System ID: {0}".format(
-                ":".join(["{:02x}".format(x) for x in system_id[::-1]])
-            )
-        )
+#        system_id = await self.read_char(client, UUIDs.SYSTEM_ID_UUID)
+#	if system_id is not None:
+#           logger.info(
+#               "System ID: {0}".format(
+#                   ":".join(["{:02x}".format(x) for x in system_id[::-1]])
+#               )
+#           )
 
         model_number = await self.read_char(client, UUIDs.MODEL_NBR_UUID)
         logger.info("Model Number: {0}".format("".join(map(chr, model_number))))
@@ -362,11 +398,11 @@ class VesselViewMobileReceiver:
         firmware_revision = await self.read_char(client, UUIDs.FIRMWARE_REV_UUID)
         logger.info("Firmware Revision: {0}".format("".join(map(chr, firmware_revision))))
 
-        hardware_revision = await self.read_char(client, UUIDs.HARDWARE_REV_UUID)
-        logger.info("Hardware Revision: {0}".format("".join(map(chr, hardware_revision))))
+#        hardware_revision = await self.read_char(client, UUIDs.HARDWARE_REV_UUID)
+#        logger.info("Hardware Revision: {0}".format("".join(map(chr, hardware_revision))))
 
-        software_revision = await self.read_char(client, UUIDs.SOFTWARE_REV_UUID)
-        logger.info("Software Revision: {0}".format("".join(map(chr, software_revision))))
+#        software_revision = await self.read_char(client, UUIDs.SOFTWARE_REV_UUID)
+#        logger.info("Software Revision: {0}".format("".join(map(chr, software_revision))))
 
 
 class UUIDs:

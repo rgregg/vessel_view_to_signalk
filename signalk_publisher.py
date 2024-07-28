@@ -7,12 +7,14 @@ import uuid
 logger = logging.getLogger(__name__)
 
 class SignalKPublisher:
-    def __init__(self, webhook_url):
+    def __init__(self, webhook_url, username, password):
         self.webhook_url = webhook_url
         self.websocket = None
         self.socket_connected = False
         self.abort = False
         self.reconnect_interval_seconds = 30
+        self.username = username
+        self.password = password
 
     async def connect_websocket(self):
         """Connect to the Signal K server using a websocket."""
@@ -59,6 +61,11 @@ class SignalKPublisher:
             
             logger.info("Connected to signalk websocket %s", self.webhook_url)
         
+            # authenticate
+            if self.username is not None:
+                await self.authenticate(self.username, self.password)
+
+            # receive messages
             while self.socket_connected:
                 try:
                     msg = await self.websocket.recv()
@@ -69,7 +76,7 @@ class SignalKPublisher:
                     self.socket_connected = False
 
     def process_webhook_message(self, msg):
-        logger.debug("SignalK webhook received: %s", msg)
+        logger.info("SignalK webhook received: %s", msg)
 
     async def authenticate(self, username, password):
         data = { 
@@ -80,15 +87,6 @@ class SignalKPublisher:
             }
         }
         await self.websocket.send(json.dumps(data))
-
-    def handle_data(self, data):
-        """Handles incoming data and calls the registered callbacks."""
-        try:
-            json_data = json.loads(data)
-            for callback in self.callbacks:
-                callback(json_data['path'], json_data['value'])
-        except (KeyError, json.JSONDecodeError) as e:
-            logger.error(f"Error handling data: {e}")
 
     def generate_request_id(self):
         return str(uuid.uuid4())
@@ -111,7 +109,7 @@ class SignalKPublisher:
         return delta
 
     async def publish_delta(self, path, value):
-        logger.info(f"Received delta to publish: '{path}', value '{value}'")        
+        logger.debug(f"Received delta to publish: '{path}', value '{value}'")        
         
         if self.socket_connected:
             delta = self.generate_delta(path, value)

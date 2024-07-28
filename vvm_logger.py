@@ -15,6 +15,8 @@ class VVMConfig:
         self._signalk_websocket_url = "ws://localhost:3000/signalk/v1/stream?subscribe=none"
         self._ble_device_address = None
         self._debug = False
+        self._username = None
+        self._password = None
     
     @property
     def signalk_websocket_url(self):
@@ -40,6 +42,22 @@ class VVMConfig:
     def debug(self, value):
         self._debug = value
 
+    @property
+    def username(self):
+        return self._username
+
+    @username.setter
+    def username(self, value):
+        self._username = value
+
+    @property
+    def password(self):
+        return self._password
+
+    @password.setter
+    def password(self, value):
+        self._password = value
+
 
 
 class VesselViewMobileDataRecorder:
@@ -51,7 +69,7 @@ class VesselViewMobileDataRecorder:
     async def main(self):
         
         # handle sigint gracefully
-        signal.signal(signal.SIGINT, self.signal_handler)
+        signal.signal(signal.SIGINT, lambda: asyncio.create_task(self.signal_handler()))
 
         config = VVMConfig()
 
@@ -81,15 +99,17 @@ class VesselViewMobileDataRecorder:
                 task = tg.create_task(self.ble_connection.run(tg))
                 background_tasks.add(task)
                 task.add_done_callback(background_tasks.discard)
-            if self.signal_handler is not None:
-                task = tg.create_task(self.signalk_socket.run(tg))
-                background_tasks.add(task)
-                task.add_done_callback(background_tasks.discard)
+            if self.signalk_socket is not None:
+               task = tg.create_task(self.signalk_socket.run(tg))
+               background_tasks.add(task)
+               task.add_done_callback(background_tasks.discard)
         logger.debug("All event loops are completed")
 
     async def publish_data_func(self, path, value):
         if self.signalk_socket is not None:
-            self.signalk_socket.publish_delta(path, value)
+            await self.signalk_socket.publish_delta(path, value)
+        else:
+            logger.debug("Couldn't publish data - no signalk socket")
 
     def parse_arguments(self, config: VVMConfig):
         parser = argparse.ArgumentParser()
@@ -123,18 +143,18 @@ class VesselViewMobileDataRecorder:
             config.debug = args.debug
 
 
-    def signal_handler(self, sig, frame):
+    async def signal_handler(self):
         logger.info("Gracefully shutting down...")
 
-        if self.signalk_socket is not None:
-            asyncio.create_task(self.signalk_socket.close())
-            self.signalk_socket = None
         if self.ble_connection is not None:
-            asyncio.create_task(self.ble_connection.close())
+            await self.ble_connection.close()
             self.ble_connection = None
+        if self.signalk_socket is not None:
+            await self.signalk_socket.close()
+            self.signalk_socket = None
 
-        logger.info("Exiting")
-        sys.exit(0)
+        logger.info("Exiting.")
+        asyncio.get_event_loop().stop()
 
     def parse_env_variables(self, config : VVMConfig):
         signalk_url = os.getenv("VVM_SIGNALK_URL")
@@ -148,6 +168,14 @@ class VesselViewMobileDataRecorder:
         debug = os.getenv("VVM_DEBUG")
         if debug is not None:
             config.debug = debug
+
+        username = os.getenv("VVM_USERNAME")
+        if username is not None:
+            config.username = username
+
+        password = os.getenv("VVM_PASSWORD")
+        if password is not None:
+            config.password = password
 
 
 if __name__ == "__main__":
