@@ -7,6 +7,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.uuids import normalize_uuid_16, uuid16_dict
 from bleak.exc import BleakCharacteristicNotFoundError
 
+from data_logger import CSVLogger
 from signalk_publisher import SignalKPublisher
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,22 @@ class VesselViewMobileReceiver:
         self.rescan_signal = asyncio.Future()
         self.publish_delta_func = publish_delta_func
         self.last_values = {}
+
+        fieldnames = ["timestamp",
+                     UUIDs.ENGINE_RPM_UUID,
+                     UUIDs.COOLANT_TEMPERATURE_UUID,
+                     UUIDs.BATTERY_VOLTAGE_UUID, 
+                     UUIDs.ENGINE_RUNTIME_UUID,
+                     UUIDs.CURRENT_FUEL_FLOW_UUID,
+                     UUIDs.OIL_PRESSURE_UUID,
+                     UUIDs.UNK_105_UUID,
+                     UUIDs.UNK_108_UUID,
+                     UUIDs.UNK_109_UUID,
+                     UUIDs.UNK_10B_UUID,
+                     UUIDs.UNK_10C_UUID,
+                     UUIDs.UNK_10D_UUID,
+                     ]
+        self.csv_logger = CSVLogger("data.csv", fieldnames)
 
     """
     Triggers scanning for the BLE hardware device if there is no connection to the device currently available. This can be
@@ -154,7 +171,7 @@ class VesselViewMobileReceiver:
             # decode data from byte array to underlying value
             value = self.parse_data_from_device(data)
             self.trigger_event_listener(uuid, value)
-
+            self.csv_logger.update_property(uuid, value)
 
             if "convert" in options:
                 convert = options["convert"]
@@ -228,12 +245,12 @@ class VesselViewMobileReceiver:
 
         data = bytes([0xCA, 0x0F, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 0111: %s", result.hex())
+        logger.info("Response from 0111: %s, expected: 00ca0f01010000", result.hex())
         # expected result = 00ca0f01010000
 
         data = bytes([0xC8, 0x0F, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 0111: %s", result.hex())
+        logger.info("Response from 0111: %s, expected: 00c80f01040000000000", result.hex())
         # expected result = 00c80f01040000000000
 
     """
