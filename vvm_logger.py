@@ -4,11 +4,12 @@ import signal
 import logging
 import asyncio
 import os
+from logging.handlers import RotatingFileHandler
 
 from signalk_publisher import SignalKPublisher
 from ble_connection import VesselViewMobileReceiver
 
-logger = logging.getLogger("vvm_logger")
+logger = logging.getLogger(__name__)
 
 class VVMConfig:
     def __init__(self):
@@ -69,7 +70,9 @@ class VesselViewMobileDataRecorder:
     async def main(self):
         
         # handle sigint gracefully
-        signal.signal(signal.SIGINT, lambda: asyncio.create_task(self.signal_handler()))
+        #signal.signal(signal.SIGINT, lambda signal, frame: asyncio.create_task(self.signal_handler(signal, frame)))
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGINT, lambda : asyncio.create_task(self.signal_handler()))
 
         config = VVMConfig()
 
@@ -86,12 +89,18 @@ class VesselViewMobileDataRecorder:
             format="%(asctime)-15s %(name)-8s %(levelname)s: %(message)s",
         )
 
+        handler = RotatingFileHandler("logs/vvm_monitor.log", maxBytes=5*1024*1024, backupCount=5)
+        handler.setLevel(log_level)
+        formatter = logging.Formatter("%(asctime)-15s %(name)-8s %(levelname)s: %(message)s")
+        handler.setFormatter(formatter)
+        logging.getLogger().addHandler(handler)
+
         # start the main loops
         if config.ble_device_address is not None:
             self.ble_connection = VesselViewMobileReceiver(config.ble_device_address, self.publish_data_func)
             
         if config.signalk_websocket_url is not None:
-            self.signalk_socket = SignalKPublisher(config.signalk_websocket_url)
+            self.signalk_socket = SignalKPublisher(config.signalk_websocket_url, config.username, config.password)
 
         background_tasks = set()
         async with asyncio.TaskGroup() as tg:
@@ -179,6 +188,9 @@ class VesselViewMobileDataRecorder:
 
 
 if __name__ == "__main__":
-    asyncio.run(VesselViewMobileDataRecorder().main())
+    try:
+        asyncio.run(VesselViewMobileDataRecorder().main())
+    except RuntimeError:
+        pass
 
 

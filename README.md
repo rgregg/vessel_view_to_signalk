@@ -11,4 +11,11 @@ into a Signal K server, which can then send the data to other devices connected 
 
 ## Run with Docker
 
-docker run --net=host --privileged  -e VVM_DEVICE_ADDRESS=12:34:56:78:90:AB -e VVM_SIGNALK_URL=ws://localhost:3000/signalk/v1/stream?subscribe=none vvm_monitor
+docker run --net=host --privileged \
+  -e VVM_DEVICE_ADDRESS=84:FD:27:D9:2C:BE \
+  -e VVM_SIGNALK_URL=ws://192.168.6.1:3000/signalk/v1/stream?subscribe=none \
+  -e VVM_USERNAME=admin \
+  -e VVM_PASSWORD=admin \
+  -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket \
+  vvm_monitor
+
