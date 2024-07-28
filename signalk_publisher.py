@@ -71,8 +71,8 @@ class SignalKPublisher:
                     msg = await self.websocket.recv()
                     if msg is not None:
                         self.process_webhook_message(msg)                    
-                except websockets.exceptions.ConnectionClosedError:
-                    logger.error("Websocket connection was closed - need to reset connection.")
+                except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError) as e:
+                    logger.error(f"Websocket connection was closed: {e}.")
                     self.socket_connected = False
 
     def process_webhook_message(self, msg):
