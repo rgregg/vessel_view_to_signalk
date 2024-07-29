@@ -16,9 +16,10 @@ class VesselViewMobileReceiver:
 
     rescan_timeout_seconds = 10
 
-    def __init__(self, device_address, publish_delta_func):
+    def __init__(self, device_address, device_name, publish_delta_func):
         logger.debug("Created a new instance of decoder class")
         self.device_address = device_address
+        self.device_name = device_name
         self.device = None
         self.abort = False
         self.engine_id = "0"
@@ -40,7 +41,6 @@ class VesselViewMobileReceiver:
         }
         self.notification_futures_queue = { }
         self.cancel_signal = asyncio.Future()
-        self.rescan_signal = asyncio.Future()
         self.publish_delta_func = publish_delta_func
         self.last_values = {}
 
@@ -60,14 +60,7 @@ class VesselViewMobileReceiver:
                      ]
         self.csv_logger = CSVLogger("data.csv", fieldnames)
 
-    """
-    Triggers scanning for the BLE hardware device if there is no connection to the device currently available. This can be
-    used as an external trigger based on some other indication (e.g. ignition switch, GPS movement, etc.)
-    """
-    def scan_for_device(self):
-        signal = self.rescan_signal
-        self.rescan_signal = asyncio.Future()
-        signal.done()
+   
 
     """
     Main run loop for detecting the BLE device and processing data from it
@@ -76,33 +69,37 @@ class VesselViewMobileReceiver:
         loop = asyncio.get_event_loop()
         
         while not self.abort:
-
             # Loop on device discovery
             while self.device is None:
-                logger.info("Scanning for bluetooth device...")
-                found_device = await BleakScanner.find_device_by_address(self.device_address)
-                
-                if found_device is None:
-                    logger.warn("Could not find BLE device with address '%s'. Will continue to scan...", self.device_address)
-                    # Wait for the timeout or the future to be triggered
-                    try:
-                        await asyncio.wait_for(asyncio.shield(self.rescan_signal), timeout=self.rescan_timeout_seconds)
-                    except TimeoutError:
-                        logger.debug("Timeout has elapsed on device scan, starting to scan again.")
-
-                else:
-                    self.device = found_device
+                logger.info("Scanning for bluetooth devices...")
+                async with BleakScanner(service_uuids=[UUIDs.DEVICE_CONFIG_UUID]) as scanner:
+                    async for tuple in scanner.advertisement_data():
+                        device = tuple[0]
+                        logging.info(f"Found BLE device: {device}")
+                        if self.device_address is not None and device.address == self.device_address:
+                            logging.info(f"Found matching device by address: {device}")
+                            self.device = device
+                            break
+                        if self.device_name is not None and device.name == self.device_name:
+                            logging.info(f"Found matching device by name: {device}")
+                            self.device = device
+                            break
 
                 if self.abort:
                     logger.debug("Aborting BLE connection and exiting loop")
                     return
+                else:
+                    logger.info("Restarting BLE device scan")
 
+            def disconnected():
+                logger.info("BLE device has disconnected")
+                self.cancel_signal.done()
 
             # Run until the device is disconnected or the process is cancelled
-            logger.info(f"Found BLE device {self.device} ")
-            async with BleakClient( self.device
-#                                    disconnected_callback=self.device_disconnected()
-                                    ) as client:
+            logger.info(f"Found BLE device {self.device}")
+            async with BleakClient(self.device,
+                                   disconnected_callback=disconnected()
+                                   ) as client:
                 logger.debug("Connected.")
 
                 logger.debug("Retriving device identification metadata...")
@@ -139,7 +136,6 @@ class VesselViewMobileReceiver:
     async def close(self):
         logger.info("Disconnecting from bluetooth device...")
         self.abort = True
-        self.rescan_signal.done()  # cancels the wait for a new device
         self.cancel_signal.done()  # cancels the loop if we have a device and disconnects
         logger.debug("completed close operations")
 
@@ -166,20 +162,24 @@ class VesselViewMobileReceiver:
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
         if uuid in self.signalk_parameter_map:
+            try:
+                self.csv_logger.update_property(uuid, data.hex())
+            except Exception as e:
+                logger.warn(f"Unable to write data to CSV: {e}")
+
             options = self.signalk_parameter_map[uuid]
             
-            # decode data from byte array to underlying value
-            value = self.parse_data_from_device(data)
-            self.trigger_event_listener(uuid, value)
-            self.csv_logger.update_property(uuid, value)
+            # decode data from byte array to underlying value (remove header bytes and convert to int)
+            decoded_value = self.parse_data_from_device(data)
+            self.trigger_event_listener(uuid, decoded_value)
 
             if "convert" in options:
                 convert = options["convert"]
-                new_value = convert(value)
-                logger.debug("Converted value from %s to %s", value, new_value)
+                new_value = convert(decoded_value)
+                logger.debug("Converted value from %s to %s", decoded_value, new_value)
             else:
-                new_value = value
-                logger.debug("No data conversion: %s", value)
+                new_value = decoded_value
+                logger.debug("No data conversion: %s", decoded_value)
 
             if "path" in options:        
                 path = self.signalk_root_path + "." + self.engine_id + "." + options["path"]
@@ -230,13 +230,18 @@ class VesselViewMobileReceiver:
     async def initalize_vvm(self, client: BleakClient):
         logger.debug("initalizing VVM device...")
 
-        # read 0300 as byte array
-        data1 = await self.read_char(client, UUIDs.DEVICE_STARTUP_UUID)
-        logger.info("Initial configuration read %s", data1)
+        # read 0302 as byte array
+        try:
+            data1 = await self.read_char(client, UUIDs.DEVICE_STARTUP_UUID)
+            logger.info("Initial configuration read %s", data1.hex())
+        except Exception:
+            pass
 
         # enable indiciations on 001
         await self.set_streaming_mode(client, enabled=False)
-        config = await self.request_device_config(client)
+
+        # Indicates which parameters are available on the device
+        parameters = await self.request_device_parameter_config(client)
 
         data = bytes([0x10, 0x27, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
@@ -265,13 +270,13 @@ class VesselViewMobileReceiver:
         await client.write_gatt_char(UUIDs.DEVICE_CONFIG_UUID, data, response=True)
 
     """
-    Writes the request to send the base state configuration from the device
+    Writes the request to send the parameter conmfiguration from the device
     via indications on characteristic DEVICE_CONFIG_UUID. This data is returned
     over a series of indications on the DEVICE_CONFIG_UUID charateristic.
     """
-    async def request_device_config(self, client: BleakClient):
+    async def request_device_parameter_config(self, client: BleakClient):
         
-        logger.info("Requesting device configuration data")
+        logger.info("Requesting device parameter configuration data")
         await client.start_notify(UUIDs.DEVICE_CONFIG_UUID, self.notification_handler)
         
         # Requests the initial data dump from 001
@@ -287,15 +292,47 @@ class VesselViewMobileReceiver:
                 await client.write_gatt_char(uuid, data, response=True)
                 result_data = await asyncio.gather(*future_data)
 
-                result_hex = [ d.hex()  for d in result_data]
-                result = '\n'.join(result_hex)
-
-                logger.info(f"Device Configuration Response: {result}")
-                return result
+                parameters = self.decode_parameter_configuration(result_data)
+                logger.info(f"Device parameters: {parameters}")
+                return parameters
+            
         except TimeoutError:
             logger.debug("timeout waiting for configuration data to return")
             return None
-       
+    
+
+    """
+    Decode the bytes that are received from the parameter dump - this provides inforamtion
+    about which signals are available and the header values to expect when receiving those
+    signals as notifications
+    """
+    def decode_parameter_configuration(self, array_of_data):
+        # Make sure the data is sorted correctly before decoding, they could
+        # arrive out of order.
+        sorted_data = sorted(array_of_data, key=lambda x: x[0])
+
+        # Data appears to be formatted accordingly:
+        # Each line starts with a two byte value indicating the order of this segment 00, 01, 02, 03 -> 09
+
+        # strip the first two bytes
+        clean_data = [ d[1:] for d in sorted_data ]
+        combined_data = bytearray()
+        for b in clean_data:
+            combined_data.extend(b)
+
+        parameters = dict()
+        header = combined_data[:5]
+        parameters["header"] = header.hex()
+        
+        data = combined_data[5:]
+        chunks = [data[i:i + 4] for i in range(0, len(data), 4)]
+        for value in chunks:
+            if int.from_bytes(value[2:]) != 0:
+                parameters[value[:2].hex()] = value[2:].hex()
+
+        return parameters
+        
+
 
     """
     Writes data to the charateristic and waits for a notification that the
@@ -395,13 +432,6 @@ class VesselViewMobileReceiver:
     Retrieves the BLE standard data for the device
     """
     async def retrieve_device_info(self, client: BleakClient):
-#        system_id = await self.read_char(client, UUIDs.SYSTEM_ID_UUID)
-#	if system_id is not None:
-#           logger.info(
-#               "System ID: {0}".format(
-#                   ":".join(["{:02x}".format(x) for x in system_id[::-1]])
-#               )
-#           )
 
         model_number = await self.read_char(client, UUIDs.MODEL_NBR_UUID)
         logger.info("Model Number: {0}".format("".join(map(chr, model_number))))
@@ -415,27 +445,18 @@ class VesselViewMobileReceiver:
         firmware_revision = await self.read_char(client, UUIDs.FIRMWARE_REV_UUID)
         logger.info("Firmware Revision: {0}".format("".join(map(chr, firmware_revision))))
 
-#        hardware_revision = await self.read_char(client, UUIDs.HARDWARE_REV_UUID)
-#        logger.info("Hardware Revision: {0}".format("".join(map(chr, hardware_revision))))
-
-#        software_revision = await self.read_char(client, UUIDs.SOFTWARE_REV_UUID)
-#        logger.info("Software Revision: {0}".format("".join(map(chr, software_revision))))
-
 
 class UUIDs:
     uuid16_lookup = {v: normalize_uuid_16(k) for k, v in uuid16_dict.items()}
 
     """Standard UUIDs from BLE protocol"""
-    SYSTEM_ID_UUID = uuid16_lookup["System ID"]
     MODEL_NBR_UUID = uuid16_lookup["Model Number String"]
     DEVICE_NAME_UUID = uuid16_lookup["Device Name"]
     FIRMWARE_REV_UUID = uuid16_lookup["Firmware Revision String"]
-    HARDWARE_REV_UUID = uuid16_lookup["Hardware Revision String"]
-    SOFTWARE_REV_UUID = uuid16_lookup["Software Revision String"]
     MANUFACTURER_NAME_UUID = uuid16_lookup["Manufacturer Name String"]
 
     """Manufacturer specific UUIDs"""
-    DEVICE_STARTUP_UUID = "00000300-0000-1000-8000-ec55f9f5b963"
+    DEVICE_STARTUP_UUID = "00000302-0000-1000-8000-ec55f9f5b963"
     DEVICE_CONFIG_UUID = "00000001-0000-1000-8000-ec55f9f5b963"
     DEVICE_NEXT_UUID = "00000111-0000-1000-8000-ec55f9f5b963"
     DEVICE_201_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
@@ -465,9 +486,15 @@ class Conversion:
         return minutes * 60
 
     def to_cubic_meters(value):
-        liters_per_hour = value * 10000
-        cubic_meters_per_hour = liters_per_hour * 0.001
-        cubic_meters_per_second = cubic_meters_per_hour / 3600
+        # Conversion factors
+        gallons_to_cubic_meters = 0.00378541
+        hours_to_seconds = 3600
+
+        # raw value
+        gallons_per_hour = value * 0.00267
+
+        # conversion
+        cubic_meters_per_second = gallons_per_hour * (gallons_to_cubic_meters / hours_to_seconds)
         return cubic_meters_per_second
 
     def to_pascals(value):

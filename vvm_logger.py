@@ -15,6 +15,7 @@ class VVMConfig:
     def __init__(self):
         self._signalk_websocket_url = "ws://localhost:3000/signalk/v1/stream?subscribe=none"
         self._ble_device_address = None
+        self._ble_device_name = None
         self._debug = False
         self._username = None
         self._password = None
@@ -34,6 +35,14 @@ class VVMConfig:
     @ble_device_address.setter
     def ble_device_address(self, value):
         self._ble_device_address = value
+
+    @property
+    def ble_device_name(self):
+        return self._ble_device_name
+    
+    @ble_device_name.setter
+    def ble_device_name(self, value):
+        self._ble_device_name = value
     
     @property
     def debug(self):
@@ -96,8 +105,8 @@ class VesselViewMobileDataRecorder:
         logging.getLogger().addHandler(handler)
 
         # start the main loops
-        if config.ble_device_address is not None:
-            self.ble_connection = VesselViewMobileReceiver(config.ble_device_address, self.publish_data_func)
+        if config.ble_device_name is not None or config.ble_device_address is not None:
+            self.ble_connection = VesselViewMobileReceiver(config.ble_device_address, config.ble_device_name, self.publish_data_func)
             
         if config.signalk_websocket_url is not None:
             self.signalk_socket = SignalKPublisher(config.signalk_websocket_url, config.username, config.password)
@@ -130,6 +139,12 @@ class VesselViewMobileDataRecorder:
         )
 
         parser.add_argument(
+            "--device-name",
+            metavar="<name>",
+            help="the name of the bluetooth device to connect to"
+        )
+
+        parser.add_argument(
             "-ws",
             "--signalk-websocket-url",
             metavar="<websocket url>",
@@ -148,6 +163,8 @@ class VesselViewMobileDataRecorder:
             config.signalk_websocket_url = args.signalk_websocket_url
         if args.device_address is not None:
             config.ble_device_address = args.device_address
+        if args.device_name is not None:
+            config.ble_device_name = args.device_name
         if args.debug is not None:
             config.debug = args.debug
 
@@ -173,6 +190,10 @@ class VesselViewMobileDataRecorder:
         ble_device_address = os.getenv("VVM_DEVICE_ADDRESS")
         if ble_device_address is not None:
             config.ble_device_address = ble_device_address
+
+        ble_device_name = os.getenv("VVM_DEVICE_NAME")
+        if ble_device_name is not None:
+            config.ble_device_name = ble_device_name
 
         debug = os.getenv("VVM_DEBUG")
         if debug is not None:
