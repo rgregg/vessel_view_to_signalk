@@ -163,7 +163,7 @@ class VesselViewMobileDataRecorder:
 
     def parse_config_file(self, config: 'VVMConfig'):
         # Read from the vvm_monitor.yaml file
-        file_path = "./vvm_monitor.yaml"
+        file_path = "config/vvm_monitor.yaml"
         if not os.path.exists(file_path):
             logger.debug("Skipping loading configuration from YAML - config file doesn't exist.")
             return
