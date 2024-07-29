@@ -8,7 +8,7 @@ from bleak.uuids import normalize_uuid_16, uuid16_dict
 from bleak.exc import BleakCharacteristicNotFoundError
 
 from data_logger import CSVLogger
-from signalk_publisher import SignalKPublisher
+from futures_queue import FuturesQueue
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +16,12 @@ class VesselViewMobileReceiver:
 
     rescan_timeout_seconds = 10
 
-    def __init__(self, device_address, device_name, publish_delta_func):
+    def __init__(self, config: 'BleConnectionConfig', publish_delta_func):
         logger.debug("Created a new instance of decoder class")
-        self.device_address = device_address
-        self.device_name = device_name
-        self.device = None
-        self.abort = False
+        self.__config = config
+        
+        self.__device = None
+        self.__abort = False
         self.engine_id = "0"
         self.signalk_root_path = "propulsion"
         self.signalk_parameter_map = {
@@ -39,53 +39,52 @@ class VesselViewMobileReceiver:
             UUIDs.UNK_10D_UUID: {},
             UUIDs.DEVICE_201_UUID: {}
         }
-        self.notification_futures_queue = { }
-        self.cancel_signal = asyncio.Future()
-        self.publish_delta_func = publish_delta_func
-        self.last_values = {}
+        self.__cancel_signal = asyncio.Future()
+        self.__publish_delta_func = publish_delta_func
+        self.__notification_queue = FuturesQueue
+        self.configure_csv_output()
 
-        fieldnames = ["timestamp",
-                     UUIDs.ENGINE_RPM_UUID,
-                     UUIDs.COOLANT_TEMPERATURE_UUID,
-                     UUIDs.BATTERY_VOLTAGE_UUID, 
-                     UUIDs.ENGINE_RUNTIME_UUID,
-                     UUIDs.CURRENT_FUEL_FLOW_UUID,
-                     UUIDs.OIL_PRESSURE_UUID,
-                     UUIDs.UNK_105_UUID,
-                     UUIDs.UNK_108_UUID,
-                     UUIDs.UNK_109_UUID,
-                     UUIDs.UNK_10B_UUID,
-                     UUIDs.UNK_10C_UUID,
-                     UUIDs.UNK_10D_UUID,
-                     ]
-        self.csv_logger = CSVLogger("data.csv", fieldnames)
-
+    @property
+    def device_address(self):
+        return self.__config.device_address
+    
+    @property
+    def device_name(self):
+        return self.__config.device_name
+    
+    @property
+    def retry_interval(self):
+        return self.__config.retry_interval
+    
    
-
     """
     Main run loop for detecting the BLE device and processing data from it
     """
     async def run(self, task_group):
-        loop = asyncio.get_event_loop()
+        #loop = asyncio.get_event_loop()
         
-        while not self.abort:
+        while not self.__abort:
             # Loop on device discovery
-            while self.device is None:
-                logger.info("Scanning for bluetooth devices...")
+            while self.__device is None:
+                if self.device_address is not None:
+                    logger.info(f"Scanning for bluetooth device with ID: '{self.device_address}'...")
+                elif self.device_name is not None:
+                    logger.info(f"Scanning for bluetooth device with name: '{self.device_name}'...")
+                
                 async with BleakScanner(service_uuids=[UUIDs.DEVICE_CONFIG_UUID]) as scanner:
                     async for tuple in scanner.advertisement_data():
                         device = tuple[0]
                         logging.info(f"Found BLE device: {device}")
                         if self.device_address is not None and device.address == self.device_address:
                             logging.info(f"Found matching device by address: {device}")
-                            self.device = device
+                            self.__device = device
                             break
                         if self.device_name is not None and device.name == self.device_name:
                             logging.info(f"Found matching device by name: {device}")
-                            self.device = device
+                            self.__device = device
                             break
 
-                if self.abort:
+                if self.__abort:
                     logger.debug("Aborting BLE connection and exiting loop")
                     return
                 else:
@@ -93,10 +92,10 @@ class VesselViewMobileReceiver:
 
             def disconnected():
                 logger.info("BLE device has disconnected")
-                self.cancel_signal.done()
+                self.__cancel_signal.done()
 
             # Run until the device is disconnected or the process is cancelled
-            logger.info(f"Found BLE device {self.device}")
+            logger.info(f"Found BLE device {self.__device}")
             async with BleakClient(self.device,
                                    disconnected_callback=disconnected()
                                    ) as client:
@@ -116,10 +115,10 @@ class VesselViewMobileReceiver:
 
                 # run until the device is disconnected or
                 # the operation is terminated
-                self.cancel_signal = asyncio.Future()
-                await self.cancel_signal
+                self.__cancel_signal = asyncio.Future()
+                await self.__cancel_signal
             
-            self.device = None
+            self.__device = None
         #end of self.abort loop
 
 
@@ -129,14 +128,34 @@ class VesselViewMobileReceiver:
             self.abort = False
             self.cancel_signal.done()
 
+    def configure_csv_output(self):
+        fieldnames = ["timestamp",
+                UUIDs.ENGINE_RPM_UUID,
+                UUIDs.COOLANT_TEMPERATURE_UUID,
+                UUIDs.BATTERY_VOLTAGE_UUID, 
+                UUIDs.ENGINE_RUNTIME_UUID,
+                UUIDs.CURRENT_FUEL_FLOW_UUID,
+                UUIDs.OIL_PRESSURE_UUID,
+                UUIDs.UNK_105_UUID,
+                UUIDs.UNK_108_UUID,
+                UUIDs.UNK_109_UUID,
+                UUIDs.UNK_10B_UUID,
+                UUIDs.UNK_10C_UUID,
+                UUIDs.UNK_10D_UUID,
+                ]
+        
+        if self.__config.csv_output_enabled:
+            self.csv_logger = CSVLogger(self.__config.csv_output_file, fieldnames)
+        else:
+            self.csv_logger = None
 
     """
     Disconnect from the BLE device and clean up anything we were doing to close down the loop
     """
     async def close(self):
         logger.info("Disconnecting from bluetooth device...")
-        self.abort = True
-        self.cancel_signal.done()  # cancels the loop if we have a device and disconnects
+        self.__abort = True
+        self.__cancel_signal.done()  # cancels the loop if we have a device and disconnects
         logger.debug("completed close operations")
 
     """
@@ -149,7 +168,7 @@ class VesselViewMobileReceiver:
             logger.debug("enabling notification on %s", uuid)
             await client.start_notify(uuid, self.notification_handler)
 
-        self.last_values = {}
+        self.__last_values = {}
 
     """
     Handles BLE notifications and indications
@@ -182,20 +201,20 @@ class VesselViewMobileReceiver:
                 logger.debug("No data conversion: %s", decoded_value)
 
             if "path" in options:        
-                path = self.signalk_root_path + "." + self.engine_id + "." + options["path"]
+                path = self.signalk_root_path + "." + self.__engine_id + "." + options["path"]
                 logger.debug(f"Publishing value {new_value} to path '{path}'")
                 self.publish_to_signalk(path, new_value)
             else:
                 logger.debug(f"No path found for uuid: {uuid}")
             
-            self.last_values[uuid] = new_value
+            self.__last_values[uuid] = new_value
             
         else:
             logger.debug("Triggering notification for %s with data %s", uuid, data)
             self.trigger_event_listener(uuid, data)
 
     def dump_last_values(self):
-        logger.info(','.join(self.last_values.values()))        
+        logger.info(','.join(self.__last_values.values()))        
 
 
     """
@@ -216,9 +235,9 @@ class VesselViewMobileReceiver:
     """
     def publish_to_signalk(self, path, value):
         logger.debug("Publishing delta to path: '%s', value '%s'", path, value)
-        if self.publish_delta_func is not None:
+        if self.__publish_delta_func is not None:
             loop = asyncio.get_event_loop()
-            loop.create_task(self.publish_delta_func(path, value))
+            loop.create_task(self.__publish_delta_func(path, value))
         else:
             logging.info("Cannot publish to signalk")
 
@@ -285,7 +304,7 @@ class VesselViewMobileReceiver:
         uuid = UUIDs.DEVICE_CONFIG_UUID
         keys = [0,1,2,3,4,5,6,7,8,9]        # data is returned as a series of 10 updates to the UUID
         
-        future_data = [self.data_for_uuid(uuid, key) for key in keys]
+        future_data = [self.future_data_for_uuid(uuid, key) for key in keys]
 
         try:
             async with asyncio.timeout(10):
@@ -345,7 +364,7 @@ class VesselViewMobileReceiver:
         # add an event lisener to the queue
         logger.debug("writing data to char %s with value %s", uuid, data.hex())
 
-        future_data_result = self.data_for_uuid(uuid)
+        future_data_result = self.future_data_for_uuid(uuid)
         await client.write_gatt_char(uuid, data, response=True)
         
         # wait for an indication to arrive on the UUID specified, and then
@@ -365,7 +384,7 @@ class VesselViewMobileReceiver:
     """
     Generate a promise for the data that will be received in the future for a given characteristic
     """
-    def data_for_uuid(self, uuid: str, key = None):
+    def future_data_for_uuid(self, uuid: str, key = None):
         
         logger.debug("future promise for data on uuid: %s, key: %s", uuid, key)
 
@@ -373,16 +392,7 @@ class VesselViewMobileReceiver:
         if key is not None:
             id = f"{uuid}+{key}"
 
-        logger.debug("future promise id: %s", id)        
-        if id in self.notification_futures_queue:
-            logger.debug("key already has a promise waiting")
-            return self.notification_futures_queue[id]
-
-        logger.debug("key is a new promise")
-        # create a new future and save it for later
-        future = asyncio.Future()
-        self.notification_futures_queue[id] = future
-        return future
+        return self.__notification_queue.register(id)
 
 
     """
@@ -392,24 +402,15 @@ class VesselViewMobileReceiver:
         
         logger.debug(f"triggering event listener for {uuid} with data: {data}")
 
-        if uuid in self.notification_futures_queue:
-            future = self.notification_futures_queue[uuid]
-            del self.notification_futures_queue[uuid]
-            future.set_result(data)
-
+        self.__notification_queue.trigger(uuid, data)
+        
         # handle promises for data based on the uuid + first byte of the response
         try:
-            key = int(data[0])
-            id = f"{uuid}+{key}"
-            logger.debug(f"checking for notification handler on key: {key}, id: {id}")
-            if id in self.notification_futures_queue:
-                future = self.notification_futures_queue[id]
-                del self.notification_futures_queue[id]
-                future.set_result(data)
-        except TypeError:
-            return
-        except IndexError:
-            return
+            id = f"{uuid}+{int(data[0])}"
+            logger.debug(f"triggering notification handler on id: {id}")
+            self.__notification_queue.trigger(id, data)
+        except Exception as e:
+            logger.warning(f"Exception triggering notification: {e}")
 
     """
     Read data from the BLE device with consistent error handling
@@ -502,3 +503,66 @@ class Conversion:
     
     def to_volts(value):
         return value / 1000.0
+
+class BleConnectionConfig:
+    def __init__(self):
+        self.__device_address = None
+        self.__device_name = None
+        self.__retry_interval = 30
+        self.__csv_output_enabled = True
+        self.__csv_output_file = "./logs/data.csv"
+        self.__csv_output_keep = 0
+
+    @property
+    def device_address(self):
+        return self.__device_address
+    
+    @device_address.setter
+    def device_address(self, value):
+        self.__device_address = value
+    
+    @property
+    def device_name(self):
+        return self.__device_name
+    
+    @device_name.setter
+    def device_name(self, value):
+        self.__device_name = value
+
+    @property
+    def retry_interval(self):
+        return self.__retry_interval
+    
+    @retry_interval.setter
+    def retry_interval(self, value):
+        self.__retry_interval = value
+
+    @property
+    def csv_output_enabled(self):
+        return self.__csv_output_enabled
+    
+    @csv_output_enabled.setter
+    def csv_output_enabled(self, value):
+        self.__csv_output_enabled = value
+
+    @property
+    def csv_output_file(self):
+        return self.__csv_output_file
+    
+    @csv_output_file.setter
+    def csv_output_file(self, value):
+        self.__csv_output_file = value
+
+    @property
+    def csv_output_keep(self):
+        return self.__csv_output_keep
+    
+    @csv_output_keep.setter
+    def csv_output_keep(self, value):
+        self.__csv_output_keep = value
+
+    @property
+    def valid(self):
+        return self.__device_name is not None or self.__device_address is not None
+
+    

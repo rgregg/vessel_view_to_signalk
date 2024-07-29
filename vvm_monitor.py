@@ -1,0 +1,228 @@
+import argparse
+import signal
+import logging
+import asyncio
+import os
+
+from logging.handlers import RotatingFileHandler
+from signalk_publisher import SignalKPublisher, SignalKConfig
+from ble_connection import VesselViewMobileReceiver, BleConnectionConfig
+
+logger = logging.getLogger("vvm_monitor")
+
+class VesselViewMobileDataRecorder:
+    
+    def __init__(self):
+        self.signalk_socket = None
+        self.ble_connection = None
+
+    async def main(self):
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGINT, lambda : asyncio.create_task(self.signal_handler()))
+
+        config = VVMConfig()
+        self.parse_config_file(config)
+        self.parse_env_variables(config)
+        self.parse_arguments(config)
+
+        # enable logging
+        log_level = config.logging_level
+        if log_level is None:
+            log_level = logging.INFO
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)-15s %(name)-8s %(levelname)s: %(message)s",
+        )
+
+        if config.logging_file is not None:
+            count = config.logging_keep if config.logging_keep is not None else 5
+            handler = RotatingFileHandler(config.logging_file, maxBytes=5*1024*1024, backupCount=count)
+            handler.setLevel(log_level)
+            formatter = logging.Formatter("%(asctime)-15s %(name)-8s %(levelname)s: %(message)s")
+            handler.setFormatter(formatter)
+            logging.getLogger().addHandler(handler)
+
+        # start the main loops
+        if config.bluetooth.valid:
+            self.ble_connection = VesselViewMobileReceiver(config.bluetooth, self.publish_data_func)
+        else:
+            logger.warning("Skipping bluetooth connection - configuration is invalid.")
+            
+        if config.signalk.valid:
+            self.signalk_socket = SignalKPublisher(config.signalk)
+        else:
+            logger.warning("Skipping signalk connection - configuration is invalid.")
+
+        background_tasks = set()
+        async with asyncio.TaskGroup() as tg:
+            if self.ble_connection is not None:
+                task = tg.create_task(self.ble_connection.run(tg))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
+            if self.signalk_socket is not None:
+               task = tg.create_task(self.signalk_socket.run(tg))
+               background_tasks.add(task)
+               task.add_done_callback(background_tasks.discard)
+        logger.debug("All event loops are completed")
+
+    async def publish_data_func(self, path, value):
+        if self.signalk_socket is not None:
+            await self.signalk_socket.publish_delta(path, value)
+        else:
+            logger.debug("Couldn't publish data - no signalk socket")
+
+    def parse_arguments(self, config: 'VVMConfig'):
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "-a",
+            "--device-address",
+            metavar="<address>",
+            help="the address of the bluetooth device to connect to",
+        )
+
+        parser.add_argument(
+            "--device-name",
+            metavar="<name>",
+            help="the name of the bluetooth device to connect to"
+        )
+
+        parser.add_argument(
+            "-ws",
+            "--signalk-websocket-url",
+            metavar="<websocket url>",
+            help="The URL for the signalk websocket service.",
+        )
+
+        parser.add_argument(
+            "--username",
+            help="Username for SignalK authentication"
+        )
+
+        parser.add_argument(
+            "--password",
+            help="Password for SignalK authentication"
+
+        )
+        
+        parser.add_argument(
+            "-d",
+            "--debug",
+            action="store_true",
+            help="sets the log level to debug",
+        )
+
+        args = parser.parse_args()
+        if args.signalk_websocket_url is not None:
+            config.signalk.websocket_url = args.signalk_websocket_url
+        if args.device_address is not None:
+            config.bluetooth.device_address = args.device_address
+        if args.device_name is not None:
+            config.bluetooth.device_name = args.device_name
+        if args.debug:
+            config.logging_level = logging.DEBUG
+        if args.username is not None:
+            config.signalk.username = args.username
+        if args.password is not None:
+            config.signalk.password = args.password
+
+
+    async def signal_handler(self):
+        logger.info("Gracefully shutting down...")
+
+        if self.ble_connection is not None:
+            await self.ble_connection.close()
+            self.ble_connection = None
+        if self.signalk_socket is not None:
+            await self.signalk_socket.close()
+            self.signalk_socket = None
+
+        logger.info("Exiting.")
+        asyncio.get_event_loop().stop()
+
+    def parse_env_variables(self, config : 'VVMConfig'):
+        signalk_url = os.getenv("VVM_SIGNALK_URL")
+        if signalk_url is not None:
+            config.signalk.websocket_url = signalk_url
+
+        ble_device_address = os.getenv("VVM_DEVICE_ADDRESS")
+        if ble_device_address is not None:
+            config.bluetooth.device_address = ble_device_address
+
+        ble_device_name = os.getenv("VVM_DEVICE_NAME")
+        if ble_device_name is not None:
+            config.bluetooth.device_name = ble_device_name
+
+        debug = os.getenv("VVM_DEBUG")
+        if debug is not None:
+            config.logging_level = logging.DEBUG
+        else:
+            config.logging_level = logging.INFO
+
+        username = os.getenv("VVM_USERNAME")
+        if username is not None:
+            config.signalk.username = username
+
+        password = os.getenv("VVM_PASSWORD")
+        if password is not None:
+            config.signalk.password = password
+
+    def parse_config_file(self, config: 'VVMConfig'):
+        # Read from the vvm_monitor.yaml file
+        pass
+
+class VVMConfig:
+    def __init__(self):
+        self._ble_config = BleConnectionConfig()
+        self._signalk_config = SignalKConfig()
+
+        self._logging_level = logging.INFO
+        self._logging_file = "./logs/vvm_monitor.log"
+        self._logging_keep = 5
+    
+    @property
+    def signalk(self):
+        return self._signalk_config
+    
+    @signalk.setter
+    def signalk(self, value):
+        self._signalk_config = value
+    
+    @property
+    def bluetooth(self):
+        return self._ble_config
+    
+    @bluetooth.setter
+    def bluetooth(self, value):
+        self._ble_config = value
+
+    @property
+    def logging_level(self):
+        return self._logging_level
+    
+    @logging_level.setter
+    def logging_level(self, value):
+        self._logging_level = value
+
+    @property
+    def logging_file(self):
+        return self._logging_file
+    
+    @logging_file.setter
+    def logging_file(self, value):
+        self._logging_file = value
+
+    @property
+    def logging_keep(self):
+        return self._logging_keep
+    
+    @logging_keep.setter
+    def logging_keep(self, value):
+        self._logging_keep = value
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(VesselViewMobileDataRecorder().main())
+    except RuntimeError:
+        pass
+
+

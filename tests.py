@@ -36,8 +36,8 @@ class TestCharacteristic(BleakGATTCharacteristic):
 class DataDecoderTests:
 
     def test_notifications(self):
-        decoder = VesselViewMobileReceiver()
-        decoder.engine_id = "0"
+        decoder = VesselViewMobileReceiver("11:22:33:44:55:66", None, None)
+        decoder.__engine_id = "0"
         
         # Engine RPM
         char = TestCharacteristic(UUIDs.ENGINE_RPM_UUID, None, None)
