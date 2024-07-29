@@ -1,0 +1,19 @@
+ble-device:
+  address: 11:22:33:44:55:66
+  name: "VVM 1234123123"
+  retry-interval-seconds: 30
+  data-recording:
+    enabled: true
+    file: ./logs/data.csv
+    keep: all
+signalk:
+  websocket-url: ws://127.0.0.1:3000/signalk/v1/stream?subscribe=none
+  username: admin
+  password: admin
+  retry-interval-seconds: 30
+logging:
+  level: INFO
+  file: ./logs/vvm_monitor.log
+  keep: 5
+  
+  

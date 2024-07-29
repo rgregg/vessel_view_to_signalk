@@ -3,6 +3,7 @@ import signal
 import logging
 import asyncio
 import os
+import yaml
 
 from logging.handlers import RotatingFileHandler
 from signalk_publisher import SignalKPublisher, SignalKConfig
@@ -22,22 +23,18 @@ class VesselViewMobileDataRecorder:
 
         config = VVMConfig()
         self.parse_config_file(config)
-        self.parse_env_variables(config)
         self.parse_arguments(config)
+        self.parse_env_variables(config)
 
         # enable logging
-        log_level = config.logging_level
-        if log_level is None:
-            log_level = logging.INFO
         logging.basicConfig(
-            level=log_level,
+            level=config.logging_level,
             format="%(asctime)-15s %(name)-8s %(levelname)s: %(message)s",
         )
 
         if config.logging_file is not None:
-            count = config.logging_keep if config.logging_keep is not None else 5
-            handler = RotatingFileHandler(config.logging_file, maxBytes=5*1024*1024, backupCount=count)
-            handler.setLevel(log_level)
+            handler = RotatingFileHandler(config.logging_file, maxBytes=5*1024*1024, backupCount=config.logging_keep)
+            handler.setLevel(config.logging_level)
             formatter = logging.Formatter("%(asctime)-15s %(name)-8s %(levelname)s: %(message)s")
             handler.setFormatter(formatter)
             logging.getLogger().addHandler(handler)
@@ -155,8 +152,6 @@ class VesselViewMobileDataRecorder:
         debug = os.getenv("VVM_DEBUG")
         if debug is not None:
             config.logging_level = logging.DEBUG
-        else:
-            config.logging_level = logging.INFO
 
         username = os.getenv("VVM_USERNAME")
         if username is not None:
@@ -168,7 +163,58 @@ class VesselViewMobileDataRecorder:
 
     def parse_config_file(self, config: 'VVMConfig'):
         # Read from the vvm_monitor.yaml file
-        pass
+        file_path = "./vvm_monitor.yaml"
+        if not os.path.exists(file_path):
+            logger.debug("Skipping loading configuration from YAML - config file doesn't exist.")
+            return
+        
+        try:
+            with open(file_path, 'r') as file:
+                logger.info(f"Reading configuration from {file_path}.")
+                data = yaml.safe_load(file)
+                ble_device_config = data.get('ble-device')
+                if ble_device_config is not None:
+                    config.bluetooth.device_address = ble_device_config.get('address')
+                    config.bluetooth.device_name = ble_device_config.get('name')
+                    config.bluetooth.retry_interval = ble_device_config.get('retry-interval-seconds', 30)
+                    csv_data_recording_config = ble_device_config.get('data-recording')
+                    if csv_data_recording_config is not None:
+                        config.bluetooth.csv_output_enabled = csv_data_recording_config.get('enabled', False)
+                        config.bluetooth.csv_output_file = csv_data_recording_config.get('file')
+                        config.bluetooth.csv_output_keep = csv_data_recording_config.get('keep', 10)
+
+                signalk_config = data.get('signalk')
+                if signalk_config is not None:
+                    config.signalk.websocket_url = signalk_config.get('websocket-url')
+                    config.signalk.username = signalk_config.get('username')
+                    config.signalk.password = signalk_config.get('password')
+                    config.signalk.retry_interval = signalk_config.get('retry-interval-seconds', 30)
+
+                logging_config = data.get('logging')
+                if logging_config is not None:
+                    level = logging_config.get('level', "INFO")
+                    if level is not None:
+                        level = level.upper()
+                        if level == "DEBUG":
+                            config.logging_level = logging.DEBUG
+                        elif level == "WARNING":
+                            config.logging_level = logging.WARNING
+                        elif level == "ERROR":
+                            config.logging_level = logging.ERROR
+                        elif level == "CRITICAL":
+                            config.logging_level = logging.CRITICAL
+                        else:
+                            config.logging_level = logging.INFO
+                    else:
+                        config.logging_level = logging.INFO
+
+                    config.logging_file = logging_config.get('file', "./logs/vvm_monitor.log")
+                    config.logging_keep = logging_config.get('keep', 5)
+
+        except Exception as e:
+            logger.warn("Error loading configuration file: {e}")
+
+
 
 class VVMConfig:
     def __init__(self):
