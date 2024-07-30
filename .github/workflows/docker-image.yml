@@ -24,15 +24,16 @@ jobs:
         username: ${{ vars.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     - uses: actions/checkout@v4
-    - name: Git branch name
-      id: git-branch-name
-      uses: EthanSK/git-branch-name-action@v1   
-    - name: Echo the branch name
-      run: echo "Branch name ${GIT_BRANCH_NAME}"
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: rgregg/vvm_monitor
     - name: Build and push
       uses: docker/build-push-action@v6
       with:
         platforms: linux/amd64,linux/arm64,linux/arm/v7
-        push: true
-        tags: rgregg/vvm_monitor:${{ env.GIT_BRANCH_NAME }}
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
 
