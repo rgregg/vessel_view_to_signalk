@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - dev
-  labels:
+  label:
     types:
       - created
       
