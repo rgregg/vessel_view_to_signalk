@@ -139,7 +139,7 @@ Header: 0x0100
 Value is expressed as rotations per minute (RPM).
 
 
-### Cooleant Temperature (00000103-0000-1000-8000-ec55f9f5b963)
+### Coolant Temperature (00000103-0000-1000-8000-ec55f9f5b963)
 
 UUID: 00000103-0000-1000-8000-ec55f9f5b963
 Handle: 0x0021
