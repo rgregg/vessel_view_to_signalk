@@ -502,7 +502,7 @@ class BleConnectionConfig:
         self.__csv_output_enabled = True
         self.__csv_output_file = "./logs/data.csv"
         self.__csv_output_keep = 0
-        self.__csv_output_format_raw = True
+        self.__csv_output_format_raw = False
 
     @property
     def device_address(self):
