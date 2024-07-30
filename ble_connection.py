@@ -179,17 +179,19 @@ class VesselViewMobileReceiver:
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
         if uuid in self.__signalk_parameter_map:
-            try:
-                self.csv_logger.update_property(uuid, data.hex())
-            except Exception as e:
-                logger.warn(f"Unable to write data to CSV: {e}")
-
-            
-            
             # decode data from byte array to underlying value (remove header bytes and convert to int)
             decoded_value = self.strip_header_and_convert_to_int(data)
             self.trigger_event_listener(uuid, decoded_value, False)
             self.convert_and_publish_data(uuid, decoded_value)
+
+            try:
+                if self.csv_logger is not None:
+                    if self.__config.csv_output_raw:
+                        self.csv_logger.update_property(uuid, data.hex())
+                    else:
+                        self.csv_logger.update_property(uuid, decoded_value)
+            except Exception as e:
+                logger.warn(f"Unable to write data to CSV: {e}")
         else:
             logger.debug("Triggering notification for %s with data %s", uuid, data)
             self.trigger_event_listener(uuid, data, True)
@@ -500,6 +502,7 @@ class BleConnectionConfig:
         self.__csv_output_enabled = True
         self.__csv_output_file = "./logs/data.csv"
         self.__csv_output_keep = 0
+        self.__csv_output_format_raw = True
 
     @property
     def device_address(self):
@@ -552,5 +555,13 @@ class BleConnectionConfig:
     @property
     def valid(self):
         return self.__device_name is not None or self.__device_address is not None
+    
 
+    @property
+    def csv_output_raw(self):
+        return self.__csv_output_format_raw
+    
+    @csv_output_raw.setter
+    def csv_output_raw(self, value):
+        self.__csv_output_format_raw = value
     
