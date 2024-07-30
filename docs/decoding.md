@@ -189,8 +189,9 @@ Handle: 0x0031
 Size: 10 byte attribute (8 byte value)
 Header: 0x0a00
 
-Data is Liters per Hour * 100. This can be converted to GPH by multiplying by 0.00267
+Data is centiliters per hour (e.g. liters * 100). This can be converted to GPH by multiplying by 0.00267
 
+6325 = 63.25 Liters per hour = 16.7088823.. GPH = 0.000017569444444444444 cubic meters per second
 5617 = 15.0 GPH
      = 56.17 LPH
 100  = 1 LPH
@@ -221,7 +222,7 @@ Handle: 0x003d
 Size: 10-byte attribute (8-byte value)
 Header: 0xb500
 
-Looks like the data is stored as 10s of Pascals. To convert to PSI value / 689.5
+Looks like the data is stored as deca-pascals (10s) of Pascals. To convert to PSI value / 689.476. To convert to Pascals * 10.
 
 
 ### Unknown (0000010b-0000-1000-8000-ec55f9f5b963)
