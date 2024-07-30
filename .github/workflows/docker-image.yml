@@ -3,7 +3,12 @@ name: Docker Image CI
 on:
   push:
     branches:
-      - *
+      - main
+      - dev
+  labels:
+    types:
+      - created
+      
 
 jobs:
   build:
