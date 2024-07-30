@@ -5,4 +5,4 @@
 service bluetooth start
 
 # start application
-python ./vvm_logger.py
+python vvm_monitor.py
