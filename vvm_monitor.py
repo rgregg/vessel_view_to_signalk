@@ -182,6 +182,7 @@ class VesselViewMobileDataRecorder:
                         config.bluetooth.csv_output_enabled = csv_data_recording_config.get('enabled', False)
                         config.bluetooth.csv_output_file = csv_data_recording_config.get('file')
                         config.bluetooth.csv_output_keep = csv_data_recording_config.get('keep', 10)
+                        config.bluetooth.csv_output_raw = csv_data_recording_config.get('output', 'decoded') == 'raw'
 
                 signalk_config = data.get('signalk')
                 if signalk_config is not None:

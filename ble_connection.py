@@ -22,15 +22,15 @@ class VesselViewMobileReceiver:
         
         self.__device = None
         self.__abort = False
-        self.engine_id = "0"
-        self.signalk_root_path = "propulsion"
-        self.signalk_parameter_map = {
-            UUIDs.ENGINE_RPM_UUID: { "path": "revolutions", "convert": Conversion.to_hertz },
-            UUIDs.COOLANT_TEMPERATURE_UUID: { "path": "temperature", "convert": Conversion.to_kelvin  },
-            UUIDs.BATTERY_VOLTAGE_UUID: { "path": "alternatorVoltage", "convert": Conversion.to_volts },
-            UUIDs.ENGINE_RUNTIME_UUID: { "path": "runTime", "convert": Conversion.to_seconds },
-            UUIDs.CURRENT_FUEL_FLOW_UUID: {"path": "fuel.rate", "convert": Conversion.to_cubic_meters},
-            UUIDs.OIL_PRESSURE_UUID: { "path": "oilPressure", "convert": Conversion.to_pascals },
+        self.__engine_id = "0"
+        self.__signalk_root_path = "propulsion"
+        self.__signalk_parameter_map = {
+            UUIDs.ENGINE_RPM_UUID: { "path": "revolutions", "convert": Conversion.rpm_to_hertz },
+            UUIDs.COOLANT_TEMPERATURE_UUID: { "path": "temperature", "convert": Conversion.celsius_to_kelvin  },
+            UUIDs.BATTERY_VOLTAGE_UUID: { "path": "alternatorVoltage", "convert": Conversion.millivolts_to_volts },
+            UUIDs.ENGINE_RUNTIME_UUID: { "path": "runTime", "convert": Conversion.minutes_to_seconds },
+            UUIDs.CURRENT_FUEL_FLOW_UUID: {"path": "fuel.rate", "convert": Conversion.centiliters_to_cubic_meters},
+            UUIDs.OIL_PRESSURE_UUID: { "path": "oilPressure", "convert": Conversion.decapascals_to_pascals },
             UUIDs.UNK_105_UUID: {},
             UUIDs.UNK_108_UUID: {},
             UUIDs.UNK_109_UUID: {},
@@ -41,7 +41,7 @@ class VesselViewMobileReceiver:
         }
         self.__cancel_signal = asyncio.Future()
         self.__publish_delta_func = publish_delta_func
-        self.__notification_queue = FuturesQueue
+        self.__notification_queue = FuturesQueue()
         self.configure_csv_output()
 
     @property
@@ -164,11 +164,9 @@ class VesselViewMobileReceiver:
     async def setup_data_notifications(self, client: BleakClient):
         logger.debug("enabling notifications on data chars")
 
-        for uuid in self.signalk_parameter_map:
+        for uuid in self.__signalk_parameter_map:
             logger.debug("enabling notification on %s", uuid)
             await client.start_notify(uuid, self.notification_handler)
-
-        self.__last_values = {}
 
     """
     Handles BLE notifications and indications
@@ -180,41 +178,40 @@ class VesselViewMobileReceiver:
 
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
-        if uuid in self.signalk_parameter_map:
+        if uuid in self.__signalk_parameter_map:
+            # decode data from byte array to underlying value (remove header bytes and convert to int)
+            decoded_value = self.strip_header_and_convert_to_int(data)
+            self.trigger_event_listener(uuid, decoded_value, False)
+            self.convert_and_publish_data(uuid, decoded_value)
+
             try:
-                self.csv_logger.update_property(uuid, data.hex())
+                if self.csv_logger is not None:
+                    if self.__config.csv_output_raw:
+                        self.csv_logger.update_property(uuid, data.hex())
+                    else:
+                        self.csv_logger.update_property(uuid, decoded_value)
             except Exception as e:
                 logger.warn(f"Unable to write data to CSV: {e}")
-
-            options = self.signalk_parameter_map[uuid]
-            
-            # decode data from byte array to underlying value (remove header bytes and convert to int)
-            decoded_value = self.parse_data_from_device(data)
-            self.trigger_event_listener(uuid, decoded_value)
-
-            if "convert" in options:
-                convert = options["convert"]
-                new_value = convert(decoded_value)
-                logger.debug("Converted value from %s to %s", decoded_value, new_value)
-            else:
-                new_value = decoded_value
-                logger.debug("No data conversion: %s", decoded_value)
-
-            if "path" in options:        
-                path = self.signalk_root_path + "." + self.__engine_id + "." + options["path"]
-                logger.debug(f"Publishing value {new_value} to path '{path}'")
-                self.publish_to_signalk(path, new_value)
-            else:
-                logger.debug(f"No path found for uuid: {uuid}")
-            
-            self.__last_values[uuid] = new_value
-            
         else:
             logger.debug("Triggering notification for %s with data %s", uuid, data)
-            self.trigger_event_listener(uuid, data)
+            self.trigger_event_listener(uuid, data, True)
 
-    def dump_last_values(self):
-        logger.info(','.join(self.__last_values.values()))        
+    def convert_and_publish_data(self, uuid, decoded_value):
+        options = self.__signalk_parameter_map[uuid]
+        if "convert" in options:
+            convert = options["convert"]
+            new_value = convert(decoded_value)
+            logger.debug("Converted value from %s to %s", decoded_value, new_value)
+        else:
+            new_value = decoded_value
+            logger.debug("No data conversion: %s", decoded_value)
+
+        if "path" in options:        
+            path = self.__signalk_root_path + "." + self.__engine_id + "." + options["path"]
+            logger.debug(f"Publishing value {new_value} to path '{path}'")
+            self.publish_to_signalk(path, new_value)
+        else:
+            logger.debug(f"No path found for uuid: {uuid}")
 
 
     """
@@ -222,7 +219,7 @@ class VesselViewMobileReceiver:
     the header bytes and converts the value to an integer with 
     little endian byte order
     """
-    def parse_data_from_device(self, data):
+    def strip_header_and_convert_to_int(self, data):
         logger.debug("Recieved data from device: %s" ,data)
         data = data[2:]  # remove the header bytes
         value = int.from_bytes(data, byteorder='little')
@@ -264,17 +261,17 @@ class VesselViewMobileReceiver:
 
         data = bytes([0x10, 0x27, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 111: %s, expected: 00102701010001", result.hex())
+        logger.info("Response: %s, expected: 00102701010001", result.hex())
         # expected result = 00102701010001
 
         data = bytes([0xCA, 0x0F, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 0111: %s, expected: 00ca0f01010000", result.hex())
+        logger.info("Response: %s, expected: 00ca0f01010000", result.hex())
         # expected result = 00ca0f01010000
 
         data = bytes([0xC8, 0x0F, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
-        logger.info("Response from 0111: %s, expected: 00c80f01040000000000", result.hex())
+        logger.info("Response: %s, expected: 00c80f01040000000000", result.hex())
         # expected result = 00c80f01040000000000
 
     """
@@ -385,9 +382,7 @@ class VesselViewMobileReceiver:
     Generate a promise for the data that will be received in the future for a given characteristic
     """
     def future_data_for_uuid(self, uuid: str, key = None):
-        
         logger.debug("future promise for data on uuid: %s, key: %s", uuid, key)
-
         id = uuid
         if key is not None:
             id = f"{uuid}+{key}"
@@ -398,19 +393,18 @@ class VesselViewMobileReceiver:
     """
     Trigger the waiting Futures when data is received
     """
-    def trigger_event_listener(self, uuid: str, data: bytes):
-        
+    def trigger_event_listener(self, uuid: str, data, raw_bytes_from_device):
         logger.debug(f"triggering event listener for {uuid} with data: {data}")
-
         self.__notification_queue.trigger(uuid, data)
         
-        # handle promises for data based on the uuid + first byte of the response
-        try:
-            id = f"{uuid}+{int(data[0])}"
-            logger.debug(f"triggering notification handler on id: {id}")
-            self.__notification_queue.trigger(id, data)
-        except Exception as e:
-            logger.warning(f"Exception triggering notification: {e}")
+        # handle promises for data based on the uuid + first byte of the response if raw data
+        if raw_bytes_from_device:
+            try:
+                id = f"{uuid}+{int(data[0])}"
+                logger.debug(f"triggering notification handler on id: {id}")
+                self.__notification_queue.trigger(id, data)
+            except Exception as e:
+                logger.warning(f"Exception triggering notification: {e}")
 
     """
     Read data from the BLE device with consistent error handling
@@ -477,31 +471,27 @@ class UUIDs:
     UNK_10D_UUID = "0000010d-0000-1000-8000-ec55f9f5b963"
 
 class Conversion:
-    def to_hertz(rpm):
+    def rpm_to_hertz(rpm):
         return rpm / 60.0
 
-    def to_kelvin(celsius):
+    def celsius_to_kelvin(celsius):
         return celsius + 273.15
 
-    def to_seconds(minutes):
+    def minutes_to_seconds(minutes):
         return minutes * 60
 
-    def to_cubic_meters(value):
+    def centiliters_to_cubic_meters(cl_per_hour):
         # Conversion factors
-        gallons_to_cubic_meters = 0.00378541
-        hours_to_seconds = 3600
+        m3_per_cl = 0.00001
+        seconds_per_hour = 3600.0
+        
+        m3_per_second = cl_per_hour * m3_per_cl / seconds_per_hour
+        return m3_per_second
 
-        # raw value
-        gallons_per_hour = value * 0.00267
-
-        # conversion
-        cubic_meters_per_second = gallons_per_hour * (gallons_to_cubic_meters / hours_to_seconds)
-        return cubic_meters_per_second
-
-    def to_pascals(value):
+    def decapascals_to_pascals(value):
         return value * 10
     
-    def to_volts(value):
+    def millivolts_to_volts(value):
         return value / 1000.0
 
 class BleConnectionConfig:
@@ -512,6 +502,7 @@ class BleConnectionConfig:
         self.__csv_output_enabled = True
         self.__csv_output_file = "./logs/data.csv"
         self.__csv_output_keep = 0
+        self.__csv_output_format_raw = False
 
     @property
     def device_address(self):
@@ -564,5 +555,13 @@ class BleConnectionConfig:
     @property
     def valid(self):
         return self.__device_name is not None or self.__device_address is not None
+    
 
+    @property
+    def csv_output_raw(self):
+        return self.__csv_output_format_raw
+    
+    @csv_output_raw.setter
+    def csv_output_raw(self, value):
+        self.__csv_output_format_raw = value
     

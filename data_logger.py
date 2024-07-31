@@ -10,7 +10,7 @@ class CSVLogger:
         self.timer = None
         
         # Create the CSV file and write the header
-        with open(self.filename, 'w', newline='') as csvfile:
+        with open(self.filename, 'a', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
             writer.writeheader()
 
