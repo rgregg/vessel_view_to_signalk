@@ -23,12 +23,11 @@ Bluetooth LE - Indications and Notifications
 ### Initial detection / configuration / initalization of the VVM
 
 
-// Check 300
+// Check 302
 1. App reads UUID: 00000302-0000-1000-8000-ec55f9f5b963 (handle 6B)
     Received: 63b9f5f955ec-0080-0010-0000-00040000            
 
         // This looks like a UUID in litten-endian encoding: 00000400-0000-1000-8000-ec55f9f5b963
-
 
 // Check 001
 2. Enables indication on 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x16)
@@ -37,12 +36,13 @@ Bluetooth LE - Indications and Notifications
 3. Writes a value to UUID 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x15)
         Value: 0d00
 4. Receives indication on UUID 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x15)
-        Value: 000d01
+        Value: 000d01  
 
 5. Writes to UUID 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x15)
-        Value: 28000301
+        Value: 2800 0301                // What happens if we pass differnet values here  - 2800401, for example, do we get more data?
+
 6. Receives indications on handle 0x0015:
-        Value: 00 28b6000100000001000001d2000002e8000003
+        Value: 00 28b6000100 000001000001d2000002e8000003
         Value: 01 70170004960000050a000006401f0007102700
         Value: 02 08b5000009d400000ab600000bfb00000c0000
         Value: 03 000d0000000e00000100000001010000010200
@@ -53,44 +53,28 @@ Bluetooth LE - Indications and Notifications
         Value: 08 00020700000208000002090000020a0000020b
         Value: 09 0000020c0000020d0000020e0000
 
-28b6000100000001000001d2000002e800000370170004960000050a000006401f000710270008b5000009d400000ab600000bfb00000c0000000d0000000e000001000000010100000102000001030000010400000105000001060000010700000108000001090000010a0000010b0000010c0000010d0000010e000002000000020100000202000002030000020400000205000002060000020700000208000002090000020a0000020b0000020c0000020d0000020e0000
-
-        Value: 28b6000100  0000-0100 0001-d200 0002-e800 0003-7017 0004-9600 0005-0a00 0006-401f 0007-1027
-                           0008-b500 0009-d400 000a-b600 000b-fb00 000c-0000 000d-0000 000e-0000 0100-0000
-                           0101-0000 0102-0000 0103-0000 0104-0000 0105-0000 0106-0000 0107-0000 0108-0000
-                           0109-0000 010a-0000 010b-0000 010c-0000 010d-0000 010e-0000 0200-0000 0201-0000
-                           0202-0000 0203-0000 0204-0000 0205-0000 0206-0000 0207-0000 0208-0000 0209-0000
-                           020a-0000 020b-0000 020c-0000 020d-0000 020e-0000
-
-
-
-
-        Value: 28b600010000 00010000 01d20000 02e80000 03701700 04960000 050a0000 06401f00 07102700
-                            08b50000 09d40000 0ab60000 0bfb0000 0c000000 0d000000 0e000000 10000000
-                            10100000 10200000 10300000 10400000 10500000 10600000 10700000 10800000
-                            10900000 10a00000 10b00000 10c00000 10d00000 10e00000 20000000 20100000
-                            20200000 20300000 20400000 20500000 20600000 20700000 20800000 20900000 
-                            20a00000 20b00000 20c00000 20d00000 20e0000        
-
+This data appears to decode into information about available data points on the device - each 4 byte segment has
+two bytes that indicate the available paramaeter and another two bytes for the header value in the notification.
+    
 7. Turns off notifications/indications on UUID: 00000201-0000-1000-8000-ec55f9f5b963 (handle 0x005f)
+        // This was never turned on in the capture - not sure if this is significant to the flow
 
 // Check 111
 8. Turns on Indication on UUID: 00000111-0000-1000-8000-ec55f9f5b963 (handle 0x005a)
 9. Writes to UUID: 00000111-0000-1000-8000-ec55f9f5b963 (Handle 0x59): 
-        Value: 102700
+        Value:   102700
 10. Indication on UUID: 00000111-0000-1000-8000-ec55f9f5b963 (handle 0x59)
         Value: 00102701 010001
 
 11. Turns on Indication on UUID 00000111-0000-1000-8000-ec55f9f5b963, handle: 0x005a
 12. Writes to UUID 00000111-0000-1000-8000-ec55f9f5b963 (handle 0x0059)
-        Value: ca0f00
-13. Indication on 0x0059
-        Value: 00ca0f01 010000 (confirmed)
+        Value:   ca0f00
+13. Indication on 00000111-0000-1000-8000-ec55f9f5b963 (handle 0x0059)
+        Value: 00ca0f01 010000 
 
 14. Turns on Indication on UUID: 00000111-0000-1000-8000-ec55f9f5b963 (handle: 0x005a)
-15. Turns on Indication on UUID: 00000111-0000-1000-8000-ec55f9f5b963 (handle: 0x005a) - does this twice??
 16. Writes to UUID 00000111-0000-1000-8000-ec55f9f5b963 (handle 0x0059)
-        Value: c80f00
+        Value:   c80f00
 17. Receives indication UUID 00000111-0000-1000-8000-ec55f9f5b963 (handle 0x0059)
         Value: 00c80f01 040000000000
 
@@ -115,7 +99,7 @@ Bluetooth LE - Indications and Notifications
 
 /// Enable streaming
 20. Writes to UUID 00000001-0000-1000-8000-ec55f9f5b963 (handle 0x15)
-        Value: 0d01
+        Value:   0d01
 21. Receives indication on 0x0015
         Value: 000d01
 
@@ -213,7 +197,7 @@ UUID: 00000109-0000-1000-8000-ec55f9f5b963
 Handle: 0x0039
 Size: 3 byte attribute
 
-Observed value was always 0x012710
+Observed value was always 0x0127 10
 
 ### Oil Pressure (0000010a-0000-1000-8000-ec55f9f5b963)
 
@@ -264,5 +248,57 @@ Size: 10-byte attribute (8-byte value)
 Header: 0xfb00
 
 No data observed - value is always 0
+
+
+## Available Signal Information
+
+In step one of the protocol, a request is made to a UUID which returns another UUID in 
+little endian format:
+
+1. App reads UUID: 00000302-0000-1000-8000-ec55f9f5b963 (handle 6B)
+    Received: 63b9f5f955ec-0080-0010-0000-00040000            
+    Decoded to readable hex, this would be the UUID: 00000400-0000-1000-8000-ec55f9f5b963
+
+    Hypothesis is that the protocol expects us to listen to every UUID between
+
+In step 5 of the conenction protocol, we ask the device for configuration data:
+5. Writes value '28000301' to UUID 00000001-0000-1000-8000-ec55f9f5b963
+
+This triggers a response that comes as a sequence of 10 responses which start with 0x00 -> 0x09.
+When combined together with the header value removed, there is a 5 byte header and then a number
+of 4 byte pairs, starting with 0x0000 -> 0x00e, 0x0100 -> 0x010e, 0x0200 -> 0x020e
+
+Based on the 10 payload data response when the initial connection is made, this appears to be
+information about which signals are available on the engine and the header values that will
+be returned from those signals.
+
+Value: 28b600 0100  
+        0000-0100 0001-d200 0002-e800 0003-7017 0004-9600 0005-0a00 0006-401f 0007-1027
+        0008-b500 0009-d400 000a-b600 000b-fb00 000c-0000 000d-0000 000e-0000 
+        
+        0100-0000 0101-0000 0102-0000 0103-0000 0104-0000 0105-0000 0106-0000 0107-0000
+        0108-0000 0109-0000 010a-0000 010b-0000 010c-0000 010d-0000 010e-0000 
+        
+        0200-0000 0201-0000 0202-0000 0203-0000 0204-0000 0205-0000 0206-0000 0207-0000 
+        0208-0000 0209-0000 020a-0000 020b-0000 020c-0000 020d-0000 020e-0000
+
+
+| ID     | Header | Description |
+|--------|--------|-------------|
+| `0000` | `0100` | Engine RPM  |
+| `0001` | `d200` | Coolant Temperature |
+| `0002` | `e800` | Battery Voltage |
+| `0003` | `7017` | Unknown |
+| `0004` | `9600` | Engine Runtime |
+| `0005` | `0a00` | Current Fuel Flow |
+| `0006` | `401f` | Unknown |
+| `0007` | `1027` | Unknown |
+| `0008` | `b500` | Oil Pressure |
+| `0009` | `d400` | Unknown |
+| `000a` | `b600` | Unknown |
+| `000b` | `fb00` | Unknown |
+
+ID's appear to repeat with the higher byte for the engine ID - 0000, 0100, 0200, 
+in the data I have available, even though I only have 1 engine.
 
 

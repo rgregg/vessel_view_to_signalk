@@ -26,18 +26,9 @@ Device 84:FD:27:D9:2C:BE (public)
 handle: 0x0062, start handle: 0x006b, end handle: 0x006f uuid: 00000400-0000-1000-8000-ec55f9f5b963
 
 # characteristics
-handle: 0x0002, char properties: 0x02, char value handle: 0x0003, uuid: 00002a00-0000-1000-8000-00805f9b34fb
-handle: 0x0004, char properties: 0x02, char value handle: 0x0005, uuid: 00002a01-0000-1000-8000-00805f9b34fb
-handle: 0x000b, char properties: 0x02, char value handle: 0x000c, uuid: 00002a29-0000-1000-8000-00805f9b34fb
-handle: 0x000d, char properties: 0x02, char value handle: 0x000e, uuid: 00002a24-0000-1000-8000-00805f9b34fb
-handle: 0x000f, char properties: 0x02, char value handle: 0x0010, uuid: 00002a26-0000-1000-8000-00805f9b34fb
-handle: 0x0011, char properties: 0x02, char value handle: 0x0012, uuid: 00002a28-0000-1000-8000-00805f9b34fb
-handle: 0x0019, char properties: 0x02, char value handle: 0x001a, uuid: 00000101-0000-1000-8000-ec55f9f5b963
 
-# Unreadable characteristics
-
-handle: 0x0007, char properties: 0x20, char value handle: 0x0008, uuid: 00002a05-0000-1000-8000-00805f9b34fb
 handle: 0x0014, char properties: 0x28, char value handle: 0x0015, uuid: 00000001-0000-1000-8000-ec55f9f5b963
+handle: 0x0019, char properties: 0x02, char value handle: 0x001a, uuid: 00000101-0000-1000-8000-ec55f9f5b963
 handle: 0x001c, char properties: 0x18, char value handle: 0x001d, uuid: 00000102-0000-1000-8000-ec55f9f5b963
 handle: 0x0020, char properties: 0x18, char value handle: 0x0021, uuid: 00000103-0000-1000-8000-ec55f9f5b963
 handle: 0x0024, char properties: 0x18, char value handle: 0x0025, uuid: 00000104-0000-1000-8000-ec55f9f5b963
@@ -58,6 +49,19 @@ handle: 0x005d, char properties: 0x20, char value handle: 0x005e, uuid: 00000201
 handle: 0x0063, char properties: 0x28, char value handle: 0x0064, uuid: 00000301-0000-1000-8000-ec55f9f5b963
 handle: 0x0067, char properties: 0x24, char value handle: 0x0068, uuid: 00000302-0000-1000-8000-ec55f9f5b963
 handle: 0x006c, char properties: 0x28, char value handle: 0x006d, uuid: 00000401-0000-1000-8000-ec55f9f5b963
+
+handle: 0x0002, char properties: 0x02, char value handle: 0x0003, uuid: 00002a00-0000-1000-8000-00805f9b34fb
+handle: 0x0004, char properties: 0x02, char value handle: 0x0005, uuid: 00002a01-0000-1000-8000-00805f9b34fb
+handle: 0x0007, char properties: 0x20, char value handle: 0x0008, uuid: 00002a05-0000-1000-8000-00805f9b34fb
+handle: 0x000b, char properties: 0x02, char value handle: 0x000c, uuid: 00002a29-0000-1000-8000-00805f9b34fb
+handle: 0x000d, char properties: 0x02, char value handle: 0x000e, uuid: 00002a24-0000-1000-8000-00805f9b34fb
+handle: 0x000f, char properties: 0x02, char value handle: 0x0010, uuid: 00002a26-0000-1000-8000-00805f9b34fb
+handle: 0x0011, char properties: 0x02, char value handle: 0x0012, uuid: 00002a28-0000-1000-8000-00805f9b34fb
+
+
+
+
+
 
 
 
