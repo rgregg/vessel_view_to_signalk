@@ -7,7 +7,7 @@ import yaml
 
 from logging.handlers import RotatingFileHandler
 from signalk_publisher import SignalKPublisher, SignalKConfig
-from ble_connection import VesselViewMobileReceiver, BleConnectionConfig
+from ble_connection import BleDeviceConnection, BleConnectionConfig
 
 logger = logging.getLogger("vvm_monitor")
 
@@ -41,7 +41,7 @@ class VesselViewMobileDataRecorder:
 
         # start the main loops
         if config.bluetooth.valid:
-            self.ble_connection = VesselViewMobileReceiver(config.bluetooth, self.publish_data_func)
+            self.ble_connection = BleDeviceConnection(config.bluetooth, self.publish_data_func)
         else:
             logger.warning("Skipping bluetooth connection - configuration is invalid.")
             

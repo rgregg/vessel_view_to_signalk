@@ -6,14 +6,14 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.uuids import normalize_uuid_16, uuid16_dict
 from bleak.exc import BleakCharacteristicNotFoundError
 
-from data_logger import CSVLogger
+from csv_writer import CSVWriter
 from futures_queue import FuturesQueue
 
 from config_decoder import EngineParameter, ConfigDecoder, EngineParameterType
 
 logger = logging.getLogger(__name__)
 
-class VesselViewMobileReceiver:
+class BleDeviceConnection:
 
     rescan_timeout_seconds = 10
 
@@ -27,6 +27,7 @@ class VesselViewMobileReceiver:
         self.__publish_delta_func = publish_delta_func
         self.__notification_queue = FuturesQueue()
         self.__engine_parameters = []
+        self.__csv_writer = None
 
     @property
     def device_address(self):
@@ -43,6 +44,14 @@ class VesselViewMobileReceiver:
     @property
     def engine_parameters(self):
         return self.__engine_parameters
+    
+    @property
+    def csv_writer(self):
+        return self.__csv_writer
+    
+    @csv_writer.setter
+    def csv_writer(self, value):
+        self.__csv_writer = value
     
    
     """
@@ -123,14 +132,14 @@ class VesselViewMobileReceiver:
     def configure_csv_output(self, engine_params):
         
         if self.__config.csv_output_enabled:
-            fieldnames = ["timestamp" ]
+            fieldnames = [ "timestamp" ]
             for param in engine_params:
                 if param.enabled:
                     fieldnames.append(param.path)
 
-            self.csv_logger = CSVLogger(self.__config.csv_output_file, fieldnames)
+            self.csv_writer = CSVWriter(self.__config.csv_output_file, fieldnames)
         else:
-            self.csv_logger = None
+            self.csv_writer = None
 
     """
     Disconnect from the BLE device and clean up anything we were doing to close down the loop
@@ -177,11 +186,11 @@ class VesselViewMobileReceiver:
             self.convert_and_publish_data(matching_param, decoded_value)
 
             try:
-                if self.csv_logger is not None:
+                if self.csv_writer is not None:
                     if self.__config.csv_output_raw:
-                        self.csv_logger.update_property(matching_param.signalk_path, data.hex())
+                        self.csv_writer.update_property(matching_param.signalk_path, data.hex())
                     else:
-                        self.csv_logger.update_property(matching_param.signalk_path, decoded_value)
+                        self.csv_writer.update_property(matching_param.signalk_path, decoded_value)
             except Exception as e:
                 logger.warn(f"Unable to write data to CSV: {e}")
         else:

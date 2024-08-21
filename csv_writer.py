@@ -2,7 +2,7 @@ import csv
 import threading
 from datetime import datetime
 
-class CSVLogger:
+class CSVWriter:
     def __init__(self, filename, fieldnames):
         self.filename = filename
         self.fieldnames = fieldnames

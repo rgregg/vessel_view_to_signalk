@@ -1,4 +1,4 @@
-from ble_connection import UUIDs, VesselViewMobileReceiver, BleConnectionConfig, Conversion
+from ble_connection import BleDeviceConnection, BleConnectionConfig, Conversion
 from config_decoder import EngineParameter, EngineParameterType
 import logging
 import unittest
@@ -53,7 +53,7 @@ class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
     UNK_10D_UUID = "0000010d-0000-1000-8000-ec55f9f5b963"   
 
 
-    def configure_parameters(self, decoder:VesselViewMobileReceiver):
+    def configure_parameters(self, decoder:BleDeviceConnection):
         decoder.engine_parameters.append(EngineParameter(EngineParameterType.ENGINE_RPM.value, 1))
         decoder.engine_parameters.append(EngineParameter(EngineParameterType.COOLANT_TEMPERATURE.value, 210))
         decoder.engine_parameters.append(EngineParameter(EngineParameterType.BATTERY_VOLTAGE.value, 232))
@@ -61,20 +61,19 @@ class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
         decoder.engine_parameters.append(EngineParameter(EngineParameterType.CURRENT_FUEL_FLOW.value, 10))
         decoder.engine_parameters.append(EngineParameter(EngineParameterType.OIL_PRESSURE.value, 181))
 
-
     async def test_notifications(self):
 
         config = BleConnectionConfig()
         config.device_name = "UnitTestRunner"
 
-        decoder = VesselViewMobileReceiver(config, None)
+        decoder = BleDeviceConnection(config, None)
         self.configure_parameters(decoder)
         
         # Engine RPM
         await self.run_char_validation(decoder, 
-                                        Test_DataDecoderTests.ENGINE_RPM_UUID,  
-                                        bytes([0x01, 0x00, 0x5e, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-                                        606)
+                                       Test_DataDecoderTests.ENGINE_RPM_UUID,  
+                                       bytes([0x01, 0x00, 0x5e, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+                                       606)
                 
         await self.run_char_validation(decoder,
                                        Test_DataDecoderTests.ENGINE_RPM_UUID,
@@ -83,9 +82,9 @@ class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
 
         # Coolant Temperature
         await self.run_char_validation(decoder, 
-                                 Test_DataDecoderTests.COOLANT_TEMPERATURE_UUID,  
-                                 bytes([0xd2, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-                                 64)
+                                       Test_DataDecoderTests.COOLANT_TEMPERATURE_UUID,  
+                                       bytes([0xd2, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+                                       64)
 
         # Battery Voltage
         await self.run_char_validation(decoder,
@@ -117,7 +116,7 @@ class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
                                        27566)
 
 
-    async def run_char_validation(self, decoder: VesselViewMobileReceiver, uuid: str, data, expected_result):
+    async def run_char_validation(self, decoder: BleDeviceConnection, uuid: str, data, expected_result):
         char = BasicGATTCharacteristic(uuid, None, None)        
         promise = decoder.future_data_for_uuid(uuid)
         decoder.notification_handler(char, data)
