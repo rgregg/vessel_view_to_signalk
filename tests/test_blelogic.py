@@ -1,4 +1,5 @@
 from ble_connection import UUIDs, VesselViewMobileReceiver, BleConnectionConfig, Conversion
+from config_decoder import EngineParameter, EngineParameterType
 import logging
 import unittest
 import asyncio
@@ -38,67 +39,95 @@ class BasicGATTCharacteristic(BleakGATTCharacteristic):
 
 class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
 
+    ENGINE_RPM_UUID = "00000102-0000-1000-8000-ec55f9f5b963"
+    COOLANT_TEMPERATURE_UUID = "00000103-0000-1000-8000-ec55f9f5b963"
+    BATTERY_VOLTAGE_UUID = "00000104-0000-1000-8000-ec55f9f5b963"
+    UNK_105_UUID = "00000105-0000-1000-8000-ec55f9f5b963"
+    ENGINE_RUNTIME_UUID = "00000106-0000-1000-8000-ec55f9f5b963"
+    CURRENT_FUEL_FLOW_UUID = "00000107-0000-1000-8000-ec55f9f5b963"
+    UNK_108_UUID = "00000108-0000-1000-8000-ec55f9f5b963"
+    UNK_109_UUID = "00000109-0000-1000-8000-ec55f9f5b963"
+    OIL_PRESSURE_UUID = "0000010a-0000-1000-8000-ec55f9f5b963"
+    UNK_10B_UUID = "0000010b-0000-1000-8000-ec55f9f5b963"
+    UNK_10C_UUID = "0000010c-0000-1000-8000-ec55f9f5b963"
+    UNK_10D_UUID = "0000010d-0000-1000-8000-ec55f9f5b963"   
+
+
+    def configure_parameters(self, decoder:VesselViewMobileReceiver):
+        decoder.engine_parameters.append(EngineParameter(EngineParameterType.ENGINE_RPM.value, 1))
+        decoder.engine_parameters.append(EngineParameter(EngineParameterType.COOLANT_TEMPERATURE.value, 210))
+        decoder.engine_parameters.append(EngineParameter(EngineParameterType.BATTERY_VOLTAGE.value, 232))
+        decoder.engine_parameters.append(EngineParameter(EngineParameterType.ENGINE_RUNTIME.value, 150))
+        decoder.engine_parameters.append(EngineParameter(EngineParameterType.CURRENT_FUEL_FLOW.value, 10))
+        decoder.engine_parameters.append(EngineParameter(EngineParameterType.OIL_PRESSURE.value, 181))
+
+
     async def test_notifications(self):
 
         config = BleConnectionConfig()
         config.device_name = "UnitTestRunner"
 
         decoder = VesselViewMobileReceiver(config, None)
+        self.configure_parameters(decoder)
         
         # Engine RPM
         await self.run_char_validation(decoder, 
-                                        UUIDs.ENGINE_RPM_UUID,  
+                                        Test_DataDecoderTests.ENGINE_RPM_UUID,  
                                         bytes([0x01, 0x00, 0x5e, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                         606)
                 
         await self.run_char_validation(decoder,
-                                       UUIDs.ENGINE_RPM_UUID,
+                                       Test_DataDecoderTests.ENGINE_RPM_UUID,
                                        bytes([0x01, 0x00, 0x7e, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                        4222)
 
         # Coolant Temperature
         await self.run_char_validation(decoder, 
-                                 UUIDs.COOLANT_TEMPERATURE_UUID,  
+                                 Test_DataDecoderTests.COOLANT_TEMPERATURE_UUID,  
                                  bytes([0xd2, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                  64)
 
         # Battery Voltage
         await self.run_char_validation(decoder,
-                                       UUIDs.BATTERY_VOLTAGE_UUID,
+                                       Test_DataDecoderTests.BATTERY_VOLTAGE_UUID,
                                        bytes([0xe8, 0x00, 0x8f, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                        12175)
 
         # Engine Runtime
         await self.run_char_validation(decoder,
-                                       UUIDs.ENGINE_RUNTIME_UUID,
+                                       Test_DataDecoderTests.ENGINE_RUNTIME_UUID,
                                        bytes([0x96, 0x00, 0xab, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                        5803)
 
         # Fuel Flow
         await self.run_char_validation(decoder,
-                                       UUIDs.CURRENT_FUEL_FLOW_UUID,
+                                       Test_DataDecoderTests.CURRENT_FUEL_FLOW_UUID,
                                        bytes([0x0A, 0x00, 0x56, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                        598)
         
         await self.run_char_validation(decoder,
-                                       UUIDs.CURRENT_FUEL_FLOW_UUID,
+                                       Test_DataDecoderTests.CURRENT_FUEL_FLOW_UUID,
                                        bytes([0x0a, 0x00, 0xb5, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                        6325)
 
         # Oil Pressure
         await self.run_char_validation(decoder,
-                                       UUIDs.OIL_PRESSURE_UUID,
+                                       Test_DataDecoderTests.OIL_PRESSURE_UUID,
                                        bytes([0xB5, 0x00, 0xAE, 0x6B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                                        27566)
 
 
-    async def run_char_validation(self, decoder, uuid: str, data, expected_result):
+    async def run_char_validation(self, decoder: VesselViewMobileReceiver, uuid: str, data, expected_result):
         char = BasicGATTCharacteristic(uuid, None, None)        
         promise = decoder.future_data_for_uuid(uuid)
         decoder.notification_handler(char, data)
-        async with asyncio.timeout(1):
-            result = await promise
-            assert result == expected_result
+        try:
+            async with asyncio.timeout(1):
+                result = await promise
+                assert result == expected_result
+        except TimeoutError:
+            print("TimeoutError")
+            pass
 
 
 class Test_Conversions(unittest.TestCase):

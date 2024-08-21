@@ -1,5 +1,6 @@
 import logging
 from enum import Enum
+from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -8,19 +9,25 @@ class ConfigDecoder:
 
     def __init__(self):
         self.__known_data = []  # array of byte arrays
-        self.__has_all_data = False
+        self.__has_all_data = None
         self.__parameters = []
     
     """
     Adds a new data packet to the decoder
     """
-    def add(self, data):
-        self.__known_data.append(data)
-        self.__has_all_data = False
+    def add(self, item):
+        if isinstance(item, Iterable) and not isinstance(item, (str, bytes)):
+            self.__known_data.extend(item)
+        else:
+            self.__known_data.append(item)
+        self.__has_all_data = None
 
     @property
     def has_all_data(self):
         # check to see if we have all the data required
+        if self.__has_all_data is None:
+            self.parse_data()
+
         return self.__has_all_data
     
     @has_all_data.setter
@@ -82,8 +89,9 @@ class ConfigDecoder:
                 raise ValueError("Incorrect data length.")
 
         self.engine_parameters = found_params
-
         self.has_all_data = True
+        
+        return found_params
         
     def pop_bytes(byte_array, num_bytes):
         # Extract the first num_bytes
@@ -93,7 +101,7 @@ class ConfigDecoder:
         return popped_bytes, remaining_bytes
 
 
-class ParameterType(Enum):
+class EngineParameterType(Enum):
     ENGINE_RPM = 0
     COOLANT_TEMPERATURE = 1
     BATTERY_VOLTAGE = 2
@@ -120,7 +128,7 @@ class EngineParameter:
         self.__notification_header = notification_header
         self.__param_enabled = (notification_header != 0)
         self.__engine_id = parameter >> 8
-        self.__parameter_type = ParameterType(parameter & 0xFF)
+        self.__parameter_type = EngineParameterType(parameter & 0xFF)
 
     @property
     def parameter_id(self):
@@ -141,6 +149,27 @@ class EngineParameter:
     @property
     def parameter_type(self):
         return self.__parameter_type
+    
+    @property
+    def signalk_path(self):
+        path = self.get_signalk_path()
+        return f"propulsion.{self.engine_id}.{path}"
         
+    def get_signalk_path(self):
+        if self.parameter_type == EngineParameterType.ENGINE_RPM:
+            return "revolutions"
+        elif self.parameter_type == EngineParameterType.COOLANT_TEMPERATURE:
+            return "temperature"
+        elif self.parameter_type == EngineParameterType.BATTERY_VOLTAGE:
+            return "alternatorVoltage"
+        elif self.parameter_type == EngineParameterType.ENGINE_RUNTIME:
+            return "runTime"
+        elif self.parameter_type == EngineParameterType.CURRENT_FUEL_FLOW:
+            return "fuel.rate"
+        elif self.parameter_type == EngineParameterType.OIL_PRESSURE:
+            return "oilPressure"
+        else:
+            logger.warning(f"Unable to map SignalK path for parameter type {self.parameter_type} on engine {self.engine_id}.")
+            return self.parameter_type.name
 
     

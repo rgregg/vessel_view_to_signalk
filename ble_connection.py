@@ -1,4 +1,3 @@
-import argparse
 import asyncio
 import logging
 
@@ -9,6 +8,8 @@ from bleak.exc import BleakCharacteristicNotFoundError
 
 from data_logger import CSVLogger
 from futures_queue import FuturesQueue
+
+from config_decoder import EngineParameter, ConfigDecoder, EngineParameterType
 
 logger = logging.getLogger(__name__)
 
@@ -22,27 +23,10 @@ class VesselViewMobileReceiver:
         
         self.__device = None
         self.__abort = False
-        self.__engine_id = "0"
-        self.__signalk_root_path = "propulsion"
-        self.__signalk_parameter_map = {
-            UUIDs.ENGINE_RPM_UUID: { "path": "revolutions", "convert": Conversion.rpm_to_hertz },
-            UUIDs.COOLANT_TEMPERATURE_UUID: { "path": "temperature", "convert": Conversion.celsius_to_kelvin  },
-            UUIDs.BATTERY_VOLTAGE_UUID: { "path": "alternatorVoltage", "convert": Conversion.millivolts_to_volts },
-            UUIDs.ENGINE_RUNTIME_UUID: { "path": "runTime", "convert": Conversion.minutes_to_seconds },
-            UUIDs.CURRENT_FUEL_FLOW_UUID: {"path": "fuel.rate", "convert": Conversion.centiliters_to_cubic_meters},
-            UUIDs.OIL_PRESSURE_UUID: { "path": "oilPressure", "convert": Conversion.decapascals_to_pascals },
-            UUIDs.UNK_105_UUID: {},
-            UUIDs.UNK_108_UUID: {},
-            UUIDs.UNK_109_UUID: {},
-            UUIDs.UNK_10B_UUID: {},
-            UUIDs.UNK_10C_UUID: {},
-            UUIDs.UNK_10D_UUID: {},
-            UUIDs.DEVICE_201_UUID: {}
-        }
         self.__cancel_signal = asyncio.Future()
         self.__publish_delta_func = publish_delta_func
         self.__notification_queue = FuturesQueue()
-        self.configure_csv_output()
+        self.__engine_parameters = []
 
     @property
     def device_address(self):
@@ -55,6 +39,10 @@ class VesselViewMobileReceiver:
     @property
     def retry_interval(self):
         return self.__config.retry_interval
+    
+    @property
+    def engine_parameters(self):
+        return self.__engine_parameters
     
    
     """
@@ -128,23 +116,18 @@ class VesselViewMobileReceiver:
             self.abort = False
             self.cancel_signal.done()
 
-    def configure_csv_output(self):
-        fieldnames = ["timestamp",
-                UUIDs.ENGINE_RPM_UUID,
-                UUIDs.COOLANT_TEMPERATURE_UUID,
-                UUIDs.BATTERY_VOLTAGE_UUID, 
-                UUIDs.ENGINE_RUNTIME_UUID,
-                UUIDs.CURRENT_FUEL_FLOW_UUID,
-                UUIDs.OIL_PRESSURE_UUID,
-                UUIDs.UNK_105_UUID,
-                UUIDs.UNK_108_UUID,
-                UUIDs.UNK_109_UUID,
-                UUIDs.UNK_10B_UUID,
-                UUIDs.UNK_10C_UUID,
-                UUIDs.UNK_10D_UUID,
-                ]
+    """
+    Configure the CSV output logger if enabled - with the engine parameters the connected
+    device supports.
+    """
+    def configure_csv_output(self, engine_params):
         
         if self.__config.csv_output_enabled:
+            fieldnames = ["timestamp" ]
+            for param in engine_params:
+                if param.enabled:
+                    fieldnames.append(param.path)
+
             self.csv_logger = CSVLogger(self.__config.csv_output_file, fieldnames)
         else:
             self.csv_logger = None
@@ -163,10 +146,16 @@ class VesselViewMobileReceiver:
     """
     async def setup_data_notifications(self, client: BleakClient):
         logger.debug("enabling notifications on data chars")
+        
+        # subscribe to all available charactieristics on the device
+        services = await client.get_services()
 
-        for uuid in self.__signalk_parameter_map:
-            logger.debug("enabling notification on %s", uuid)
-            await client.start_notify(uuid, self.notification_handler)
+        # Iterate over all characteristics in all services
+        for service in services:
+            for characteristic in service.characteristics:
+                if "notify" in characteristic.properties:
+                    await client.start_notify(characteristic.uuid, self.notification_handler)
+                    logger.debug(f"Subscribed to {characteristic.uuid}")
 
     """
     Handles BLE notifications and indications
@@ -178,40 +167,40 @@ class VesselViewMobileReceiver:
 
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
-        if uuid in self.__signalk_parameter_map:
+
+        data_header = int.from_bytes(data[:2], byteorder='little')
+        matching_param = next((element for element in self.__engine_parameters if element.notification_header == data_header), None)
+        if matching_param:
             # decode data from byte array to underlying value (remove header bytes and convert to int)
             decoded_value = self.strip_header_and_convert_to_int(data)
             self.trigger_event_listener(uuid, decoded_value, False)
-            self.convert_and_publish_data(uuid, decoded_value)
+            self.convert_and_publish_data(matching_param, decoded_value)
 
             try:
                 if self.csv_logger is not None:
                     if self.__config.csv_output_raw:
-                        self.csv_logger.update_property(uuid, data.hex())
+                        self.csv_logger.update_property(matching_param.signalk_path, data.hex())
                     else:
-                        self.csv_logger.update_property(uuid, decoded_value)
+                        self.csv_logger.update_property(matching_param.signalk_path, decoded_value)
             except Exception as e:
                 logger.warn(f"Unable to write data to CSV: {e}")
         else:
-            logger.debug("Triggering notification for %s with data %s", uuid, data)
+            logger.debug(f"Triggered notification for UUID: {uuid} with data {data.hex()}")
             self.trigger_event_listener(uuid, data, True)
 
-    def convert_and_publish_data(self, uuid, decoded_value):
-        options = self.__signalk_parameter_map[uuid]
-        if "convert" in options:
-            convert = options["convert"]
-            new_value = convert(decoded_value)
-            logger.debug("Converted value from %s to %s", decoded_value, new_value)
+    """
+    Converts data using the engine paramater conversion function into the signal k
+    expected format and then publishes the data using the singalK API connector
+    """
+    def convert_and_publish_data(self, engine_param: EngineParameter, decoded_value):
+        path = engine_param.get_signalk_path()
+        convert_func = Conversion.conversion_for_parameter_type(engine_param.parameter_type)
+        output_value = convert_func(decoded_value)
+        if path:
+            logger.debug(f"Publishing value '{output_value}' to path '{path}'")
+            self.publish_to_signalk(path, output_value)
         else:
-            new_value = decoded_value
-            logger.debug("No data conversion: %s", decoded_value)
-
-        if "path" in options:        
-            path = self.__signalk_root_path + "." + self.__engine_id + "." + options["path"]
-            logger.debug(f"Publishing value {new_value} to path '{path}'")
-            self.publish_to_signalk(path, new_value)
-        else:
-            logger.debug(f"No path found for uuid: {uuid}")
+            logger.debug(f"No path found for parameter: '{engine_param}' with value '{output_value}'")
 
 
     """
@@ -247,17 +236,18 @@ class VesselViewMobileReceiver:
         logger.debug("initalizing VVM device...")
 
         # read 0302 as byte array
-        try:
-            data1 = await self.read_char(client, UUIDs.DEVICE_STARTUP_UUID)
-            logger.info("Initial configuration read %s", data1.hex())
-        except Exception:
-            pass
+        # try:
+        #     data1 = await self.read_char(client, UUIDs.DEVICE_STARTUP_UUID)
+        #     logger.info("Initial configuration read %s", data1.hex())
+        # except Exception:
+        #     pass
 
         # enable indiciations on 001
         await self.set_streaming_mode(client, enabled=False)
 
         # Indicates which parameters are available on the device
-        parameters = await self.request_device_parameter_config(client)
+        self.__engine_parameters = await self.request_device_parameter_config(client)
+        self.configure_csv_output(self.__engine_parameters)
 
         data = bytes([0x10, 0x27, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
@@ -308,46 +298,16 @@ class VesselViewMobileReceiver:
                 await client.write_gatt_char(uuid, data, response=True)
                 result_data = await asyncio.gather(*future_data)
 
-                parameters = self.decode_parameter_configuration(result_data)
-                logger.info(f"Device parameters: {parameters}")
-                return parameters
+                decoder = ConfigDecoder()
+                decoder.add(result_data)
+                engine_parameters = decoder.parse_data()
+                logger.info(f"Device parameters: {engine_parameters}")
+                return engine_parameters
             
         except TimeoutError:
             logger.debug("timeout waiting for configuration data to return")
             return None
-    
 
-    """
-    Decode the bytes that are received from the parameter dump - this provides inforamtion
-    about which signals are available and the header values to expect when receiving those
-    signals as notifications
-    """
-    def decode_parameter_configuration(self, array_of_data):
-        # Make sure the data is sorted correctly before decoding, they could
-        # arrive out of order.
-        sorted_data = sorted(array_of_data, key=lambda x: x[0])
-
-        # Data appears to be formatted accordingly:
-        # Each line starts with a two byte value indicating the order of this segment 00, 01, 02, 03 -> 09
-
-        # strip the first two bytes
-        clean_data = [ d[1:] for d in sorted_data ]
-        combined_data = bytearray()
-        for b in clean_data:
-            combined_data.extend(b)
-
-        parameters = dict()
-        header = combined_data[:5]
-        parameters["header"] = header.hex()
-        
-        data = combined_data[5:]
-        chunks = [data[i:i + 4] for i in range(0, len(data), 4)]
-        for value in chunks:
-            if int.from_bytes(value[2:]) != 0:
-                parameters[value[:2].hex()] = value[2:].hex()
-
-        return parameters
-        
 
 
     """
@@ -456,19 +416,19 @@ class UUIDs:
     DEVICE_NEXT_UUID = "00000111-0000-1000-8000-ec55f9f5b963"
     DEVICE_201_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
 
-    """Engine data parameters"""
-    ENGINE_RPM_UUID = "00000102-0000-1000-8000-ec55f9f5b963"
-    COOLANT_TEMPERATURE_UUID = "00000103-0000-1000-8000-ec55f9f5b963"
-    BATTERY_VOLTAGE_UUID = "00000104-0000-1000-8000-ec55f9f5b963"
-    UNK_105_UUID = "00000105-0000-1000-8000-ec55f9f5b963"
-    ENGINE_RUNTIME_UUID = "00000106-0000-1000-8000-ec55f9f5b963"
-    CURRENT_FUEL_FLOW_UUID = "00000107-0000-1000-8000-ec55f9f5b963"
-    UNK_108_UUID = "00000108-0000-1000-8000-ec55f9f5b963"
-    UNK_109_UUID = "00000109-0000-1000-8000-ec55f9f5b963"
-    OIL_PRESSURE_UUID = "0000010a-0000-1000-8000-ec55f9f5b963"
-    UNK_10B_UUID = "0000010b-0000-1000-8000-ec55f9f5b963"
-    UNK_10C_UUID = "0000010c-0000-1000-8000-ec55f9f5b963"
-    UNK_10D_UUID = "0000010d-0000-1000-8000-ec55f9f5b963"
+    # """Engine data parameters"""
+    # ENGINE_RPM_UUID = "00000102-0000-1000-8000-ec55f9f5b963"
+    # COOLANT_TEMPERATURE_UUID = "00000103-0000-1000-8000-ec55f9f5b963"
+    # BATTERY_VOLTAGE_UUID = "00000104-0000-1000-8000-ec55f9f5b963"
+    # UNK_105_UUID = "00000105-0000-1000-8000-ec55f9f5b963"
+    # ENGINE_RUNTIME_UUID = "00000106-0000-1000-8000-ec55f9f5b963"
+    # CURRENT_FUEL_FLOW_UUID = "00000107-0000-1000-8000-ec55f9f5b963"
+    # UNK_108_UUID = "00000108-0000-1000-8000-ec55f9f5b963"
+    # UNK_109_UUID = "00000109-0000-1000-8000-ec55f9f5b963"
+    # OIL_PRESSURE_UUID = "0000010a-0000-1000-8000-ec55f9f5b963"
+    # UNK_10B_UUID = "0000010b-0000-1000-8000-ec55f9f5b963"
+    # UNK_10C_UUID = "0000010c-0000-1000-8000-ec55f9f5b963"
+    # UNK_10D_UUID = "0000010d-0000-1000-8000-ec55f9f5b963"   
 
 class Conversion:
     def rpm_to_hertz(rpm):
@@ -493,6 +453,29 @@ class Conversion:
     
     def millivolts_to_volts(value):
         return value / 1000.0
+    
+    def identity_function(value):
+        return value
+    
+    def conversion_for_parameter_type(param: EngineParameterType):
+        if param == EngineParameterType.BATTERY_VOLTAGE:
+            return Conversion.millivolts_to_volts
+        elif param == EngineParameterType.COOLANT_TEMPERATURE:
+            return Conversion.celsius_to_kelvin
+        elif param == EngineParameterType.CURRENT_FUEL_FLOW:
+            return Conversion.centiliters_to_cubic_meters
+        elif param == EngineParameterType.ENGINE_RPM:
+            return Conversion.rpm_to_hertz
+        elif param == EngineParameterType.ENGINE_RUNTIME:
+            return Conversion.minutes_to_seconds
+        elif param == EngineParameterType.OIL_PRESSURE:
+            return Conversion.decapascals_to_pascals
+        else:
+            logger.error(f"Unknown conversion for unknown datatype: {param}")
+            return Conversion.identity_function
+
+
+        
 
 class BleConnectionConfig:
     def __init__(self):
