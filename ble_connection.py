@@ -68,7 +68,7 @@ class BleDeviceConnection:
                 elif self.device_name is not None:
                     logger.info(f"Scanning for bluetooth device with name: '{self.device_name}'...")
                 
-                async with BleakScanner(service_uuids=[UUIDs.DEVICE_CONFIG_UUID]) as scanner:
+                async with BleakScanner() as scanner:
                     async for tuple in scanner.advertisement_data():
                         device = tuple[0]
                         logging.info(f"Found BLE device: {device}")
