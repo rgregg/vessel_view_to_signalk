@@ -26,7 +26,7 @@ class BleDeviceConnection:
         self.__cancel_signal = asyncio.Future()
         self.__publish_delta_func = publish_delta_func
         self.__notification_queue = FuturesQueue()
-        self.__engine_parameters = []
+        self.__engine_parameters = {}
         self.__csv_writer = None
 
     @property
@@ -180,8 +180,11 @@ class BleDeviceConnection:
         # that information into the SignalK client as a property delta
 
         data_header = int.from_bytes(data[:2], byteorder='little')
-        logger.info(f"data_header: {data_header}")
-        matching_param = next((element for element in self.__engine_parameters if element.notification_header == data_header), None)
+        logger.debug(f"data_header: {data_header}")
+
+        matching_param = self.__engine_parameters.get(data_header)
+        logger.debug(f"Matching parameter: {matching_param}")
+        
         if matching_param:
             # decode data from byte array to underlying value (remove header bytes and convert to int)
             decoded_value = self.strip_header_and_convert_to_int(data)
@@ -198,7 +201,7 @@ class BleDeviceConnection:
             except Exception as e:
                 logger.warn(f"Unable to write data to CSV: {e}")
         else:
-            logger.debug(f"Triggered notification for UUID: {uuid} with data {data.hex()}")
+            logger.debug(f"Triggered default notification for UUID: {uuid} with data {data.hex()}")
             self.trigger_event_listener(uuid, data, True)
 
     """
@@ -259,8 +262,9 @@ class BleDeviceConnection:
         await self.set_streaming_mode(client, enabled=False)
 
         # Indicates which parameters are available on the device
-        self.__engine_parameters = await self.request_device_parameter_config(client)
-        self.configure_csv_output(self.__engine_parameters)
+        engine_params = await self.request_device_parameter_config(client)
+        self.configure_csv_output(engine_params)
+        self.__engine_parameters = { param.notification_header: param for param in engine_params }
 
         data = bytes([0x10, 0x27, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)

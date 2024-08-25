@@ -59,7 +59,7 @@ class ConfigDecoder:
 
         # check to see if we have a valid header on the data
         if combined[0] != 0x28:
-            logger.warning(f"Unexpected data format: {combined}")
+            logger.warning(f"Unexpected data format - value doesn't start with 0x28: {combined.hex()}")
         #     self.has_all_data = False
         #     raise ValueError("Value of first byte is not expected value.")
 
@@ -130,6 +130,9 @@ class EngineParameter:
         self.__param_enabled = (notification_header != 0)
         self.__engine_id = parameter >> 8
         self.__parameter_type = EngineParameterType(parameter & 0xFF)
+
+    def __str__(self):
+        return f"EngineParameter({self.parameter_id}, {self.notification_header}, {self.signalk_path})"
 
     @property
     def parameter_id(self):

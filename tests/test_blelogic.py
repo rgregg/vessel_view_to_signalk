@@ -54,12 +54,12 @@ class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
 
 
     def configure_parameters(self, decoder:BleDeviceConnection):
-        decoder.engine_parameters.append(EngineParameter(EngineParameterType.ENGINE_RPM.value, 1))
-        decoder.engine_parameters.append(EngineParameter(EngineParameterType.COOLANT_TEMPERATURE.value, 210))
-        decoder.engine_parameters.append(EngineParameter(EngineParameterType.BATTERY_VOLTAGE.value, 232))
-        decoder.engine_parameters.append(EngineParameter(EngineParameterType.ENGINE_RUNTIME.value, 150))
-        decoder.engine_parameters.append(EngineParameter(EngineParameterType.CURRENT_FUEL_FLOW.value, 10))
-        decoder.engine_parameters.append(EngineParameter(EngineParameterType.OIL_PRESSURE.value, 181))
+        decoder.engine_parameters[1] = EngineParameter(EngineParameterType.ENGINE_RPM.value, 1)
+        decoder.engine_parameters[210] = EngineParameter(EngineParameterType.COOLANT_TEMPERATURE.value, 210)
+        decoder.engine_parameters[232] = EngineParameter(EngineParameterType.BATTERY_VOLTAGE.value, 232)
+        decoder.engine_parameters[150] = EngineParameter(EngineParameterType.ENGINE_RUNTIME.value, 150)
+        decoder.engine_parameters[10] = EngineParameter(EngineParameterType.CURRENT_FUEL_FLOW.value, 10)
+        decoder.engine_parameters[181] = EngineParameter(EngineParameterType.OIL_PRESSURE.value, 181)
 
     async def test_notifications(self):
 
