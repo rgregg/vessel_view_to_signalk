@@ -76,7 +76,7 @@ class BleDeviceConnection:
                 async with BleakScanner() as scanner:
                     async for tuple in scanner.advertisement_data():
                         device = tuple[0]
-                        logger.info(f"Found BLE device: {device}")
+                        logger.debug(f"Found BLE device: {device}")
                         if self.device_address is not None and device.address == self.device_address:
                             logger.info(f"Found matching device by address: {device}")
                             self.__device = device
