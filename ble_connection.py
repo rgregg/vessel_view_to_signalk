@@ -54,6 +54,11 @@ class BleDeviceConnection:
         self.__csv_writer = value
     
    
+    def disconnected(self):
+        logger.info("BLE device has disconnected")
+        self.__cancel_signal.done()
+
+
     """
     Main run loop for detecting the BLE device and processing data from it
     """
@@ -71,50 +76,47 @@ class BleDeviceConnection:
                 async with BleakScanner() as scanner:
                     async for tuple in scanner.advertisement_data():
                         device = tuple[0]
-                        logging.info(f"Found BLE device: {device}")
+                        logger.info(f"Found BLE device: {device}")
                         if self.device_address is not None and device.address == self.device_address:
-                            logging.info(f"Found matching device by address: {device}")
+                            logger.info(f"Found matching device by address: {device}")
                             self.__device = device
                             break
                         if self.device_name is not None and device.name == self.device_name:
-                            logging.info(f"Found matching device by name: {device}")
+                            logger.info(f"Found matching device by name: {device}")
                             self.__device = device
                             break
 
                 if self.__abort:
                     logger.debug("Aborting BLE connection and exiting loop")
                     return
-                else:
-                    logger.info("Restarting BLE device scan")
-
-            def disconnected():
-                logger.info("BLE device has disconnected")
-                self.__cancel_signal.done()
 
             # Run until the device is disconnected or the process is cancelled
             logger.info(f"Found BLE device {self.__device}")
-            async with BleakClient(self.device,
-                                   disconnected_callback=disconnected()
-                                   ) as client:
-                logger.debug("Connected.")
+            try:
+                async with BleakClient(self.__device,
+                                    disconnected_callback=self.disconnected()
+                                    ) as client:
+                    logger.debug("Connected.")
 
-                logger.debug("Retriving device identification metadata...")
-                await self.retrieve_device_info(client)
-                
-                logger.debug("Initalizing VVM...")
-                await self.initalize_vvm(client)
-                
-                logger.debug("Configuring data streaming notifications...")
-                await self.setup_data_notifications(client)
+                    logger.debug("Retriving device identification metadata...")
+                    await self.retrieve_device_info(client)
+                    
+                    logger.debug("Initalizing VVM...")
+                    await self.initalize_vvm(client)
+                    
+                    logger.debug("Configuring data streaming notifications...")
+                    await self.setup_data_notifications(client)
 
-                logger.info("Enabling data streaming from BLE device")
-                await self.set_streaming_mode(client, enabled=True)
+                    logger.info("Enabling data streaming from BLE device")
+                    await self.set_streaming_mode(client, enabled=True)
 
-                # run until the device is disconnected or
-                # the operation is terminated
-                self.__cancel_signal = asyncio.Future()
-                await self.__cancel_signal
-            
+                    # run until the device is disconnected or
+                    # the operation is terminated
+                    self.__cancel_signal = asyncio.Future()
+                    await self.__cancel_signal
+            except Exception as e:
+                logger.warn(f"Exception from BLE connection: {e}")
+
             self.__device = None
         #end of self.abort loop
 
@@ -135,7 +137,7 @@ class BleDeviceConnection:
             fieldnames = [ "timestamp" ]
             for param in engine_params:
                 if param.enabled:
-                    fieldnames.append(param.path)
+                    fieldnames.append(param.signalk_path)
 
             self.csv_writer = CSVWriter(self.__config.csv_output_file, fieldnames)
         else:
@@ -178,6 +180,7 @@ class BleDeviceConnection:
         # that information into the SignalK client as a property delta
 
         data_header = int.from_bytes(data[:2], byteorder='little')
+        logger.info(f"data_header: {data_header}")
         matching_param = next((element for element in self.__engine_parameters if element.notification_header == data_header), None)
         if matching_param:
             # decode data from byte array to underlying value (remove header bytes and convert to int)
@@ -185,6 +188,7 @@ class BleDeviceConnection:
             self.trigger_event_listener(uuid, decoded_value, False)
             self.convert_and_publish_data(matching_param, decoded_value)
 
+            logger.info(f"Received data for {matching_param.signalk_path} with value {decoded_value}")
             try:
                 if self.csv_writer is not None:
                     if self.__config.csv_output_raw:
@@ -234,7 +238,7 @@ class BleDeviceConnection:
             loop = asyncio.get_event_loop()
             loop.create_task(self.__publish_delta_func(path, value))
         else:
-            logging.info("Cannot publish to signalk")
+            logger.info("Cannot publish to signalk")
 
     """
     Sets up the VVM based on the patters from the mobile application. This is likely

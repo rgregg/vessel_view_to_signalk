@@ -59,9 +59,9 @@ class ConfigDecoder:
 
         # check to see if we have a valid header on the data
         if combined[0] != 0x28:
-            logger.error(f"Unexpected data format: {combined[0]}")
-            self.has_all_data = False
-            raise ValueError("Value of first byte is not expected value.")
+            logger.warning(f"Unexpected data format: {combined}")
+        #     self.has_all_data = False
+        #     raise ValueError("Value of first byte is not expected value.")
 
         # check to see if we have all the data we expect
         length_of_data = int.from_bytes(combined[1:2], byteorder='little')
@@ -80,6 +80,7 @@ class ConfigDecoder:
             next_param, parsing_data = ConfigDecoder.pop_bytes(parsing_data, 4)
             param_id = int.from_bytes(next_param[:2])
             header_id = int.from_bytes(next_param[2:])
+            logger.info(f"Parameter: {param_id} with header: {header_id}")
             found_params.append(EngineParameter(param_id, header_id))
 
             remaining_bytes = len(parsing_data)
