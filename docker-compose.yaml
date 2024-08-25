@@ -1,0 +1,10 @@
+services:
+  vvm_monitor:
+    container_name: vvm_monitor
+    image: rgregg/vvm_monitor:latest
+    network_mode: host  # this isn't required, but makes it easier to use signalk website at 127.0.0.1
+    restart: unless-stopped
+    volumes:
+     - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+     - ./vvm/config:/app/config
+     - ./vvm/logs:/app/logs
