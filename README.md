@@ -50,11 +50,13 @@ You can also provide configuration via environment variables:
 
 ```bash
 docker run  \
-  -e VVM_DEVICE_ADDRESS=11:22:33:44:55:66 \
-  -e VVM_SIGNALK_URL=ws://127.0.0.1:3000/signalk/v1/stream?subscribe=none \
-  -e VVM_USERNAME=admin \
-  -e VVM_PASSWORD=admin \
+  -e "VVM_DEVICE_ADDRESS=11:22:33:44:55:66" \
+  -e "VVM_SIGNALK_URL=ws://127.0.0.1:3000/signalk/v1/stream?subscribe=none" \
+  -e "VVM_USERNAME=admin" \
+  -e "VVM_PASSWORD=admin" \
   -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket \
+  --network=host \
+  --priviledged \
   vvm_monitor
 ```
 
