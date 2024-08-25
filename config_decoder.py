@@ -26,7 +26,7 @@ class ConfigDecoder:
     def has_all_data(self):
         # check to see if we have all the data required
         if self.__has_all_data is None:
-            self.parse_data()
+            self.combine_and_parse_data()
 
         return self.__has_all_data
     
@@ -42,7 +42,7 @@ class ConfigDecoder:
     def engine_parameters(self, value):
         self.__parameters = value
 
-    def parse_data(self):
+    def combine_and_parse_data(self):
         # sort known_data by the first byte
         data = self.__known_data
         logger.debug(f"Starting data: {data}")
@@ -57,24 +57,26 @@ class ConfigDecoder:
         combined = b''.join(clean_data)
         logger.debug(f"Combined data: {combined.hex()}")
 
+        return self.parse_params(combined)
+
+    def parse_params(self, combined_data):
         # check to see if we have a valid header on the data
-        if combined[0] != 0x28:
-            logger.warning(f"Unexpected data format - value doesn't start with 0x28: {combined.hex()}")
+        if combined_data[0] != 0x28:
+            logger.warning(f"Unexpected data format - value doesn't start with 0x28: {combined_data.hex()}")
         #     self.has_all_data = False
         #     raise ValueError("Value of first byte is not expected value.")
 
         # check to see if we have all the data we expect
-        length_of_data = int.from_bytes(combined[1:2], byteorder='little')
-        test = combined[3:] # ignore header & length data
-        actual_length = len(combined[3:])
+        length_of_data = int.from_bytes(combined_data[1:2], byteorder='little')
+        actual_length = len(combined_data[3:])
         logger.debug(f"Expected data length {length_of_data}, actual {actual_length}")
         if actual_length != length_of_data:
             self.has_all_data = False
             raise ValueError(f"Expected {length_of_data} bytes, but only have {actual_length}.")
 
         # parse the data into output
-        magic_number, parsing_data = ConfigDecoder.pop_bytes(combined[3:], 2)
-        logger.debug(f"Magic number was {int.from_bytes(magic_number, byteorder='little')}")
+        magic_number, parsing_data = ConfigDecoder.pop_bytes(combined_data[3:], 2)
+        logger.debug(f"Magic number was {magic_number.hex()}")
         found_params = []
         while len(parsing_data) != 0:
             next_param, parsing_data = ConfigDecoder.pop_bytes(parsing_data, 4)

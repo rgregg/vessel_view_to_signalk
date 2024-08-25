@@ -1,5 +1,5 @@
 from ble_connection import BleDeviceConnection, BleConnectionConfig, Conversion
-from config_decoder import EngineParameter, EngineParameterType
+from config_decoder import ConfigDecoder, EngineParameter, EngineParameterType
 import logging
 import unittest
 import asyncio
@@ -61,13 +61,19 @@ class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
         decoder.engine_parameters[10] = EngineParameter(EngineParameterType.CURRENT_FUEL_FLOW.value, 10)
         decoder.engine_parameters[181] = EngineParameter(EngineParameterType.OIL_PRESSURE.value, 181)
 
+    def configure_parameters_live(self, connection:BleDeviceConnection):
+        config_data = "28b6000100000001000001d2000002e800000370170004960000050a000006401f000710270008b5000009d400000ab600000bfb00000c0000000d0000000e000001000000010100000102000001030000010400000105000001060000010700000108000001090000010a0000010b0000010c0000010d0000010e000002000000020100000202000002030000020400000205000002060000020700000208000002090000020a0000020b0000020c0000020d0000020e0000"
+        decoder = ConfigDecoder()
+        params = decoder.parse_params(bytes.fromhex(config_data))
+        connection.update_engine_params(params)
+
     async def test_notifications(self):
 
         config = BleConnectionConfig()
         config.device_name = "UnitTestRunner"
 
         decoder = BleDeviceConnection(config, None)
-        self.configure_parameters(decoder)
+        self.configure_parameters_live(decoder)
         
         # Engine RPM
         await self.run_char_validation(decoder, 

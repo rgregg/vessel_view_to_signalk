@@ -94,7 +94,7 @@ class BleDeviceConnection:
             logger.info(f"Found BLE device {self.__device}")
             try:
                 async with BleakClient(self.__device,
-                                    disconnected_callback=self.disconnected()
+                                    disconnected_callback=self.disconnected
                                     ) as client:
                     logger.debug("Connected.")
 
@@ -121,7 +121,7 @@ class BleDeviceConnection:
         #end of self.abort loop
 
 
-        def device_disconnected(self):
+        def device_disconnected(self, client: BleakClient):
             # handle the device disconnecting from the system
             logger.warn("BLE device was disconnected. Will attempt to reconnect.")
             self.abort = False
@@ -158,15 +158,16 @@ class BleDeviceConnection:
     async def setup_data_notifications(self, client: BleakClient):
         logger.debug("enabling notifications on data chars")
         
-        # subscribe to all available charactieristics on the device
-        services = await client.get_services()
-
-        # Iterate over all characteristics in all services
-        for service in services:
+        # Iterate over all characteristics in all services and subscribe
+        for service in client.services:
             for characteristic in service.characteristics:
                 if "notify" in characteristic.properties:
-                    await client.start_notify(characteristic.uuid, self.notification_handler)
-                    logger.debug(f"Subscribed to {characteristic.uuid}")
+                    try:
+                        await client.start_notify(characteristic.uuid, self.notification_handler)
+                        logger.debug(f"Subscribed to {characteristic.uuid}")
+                    except Exception as e:
+                        logger.warning(f"Unable to subscribe to {characteristic.uuid}: {e}")
+    
 
     """
     Handles BLE notifications and indications
@@ -179,7 +180,7 @@ class BleDeviceConnection:
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
 
-        data_header = int.from_bytes(data[:2], byteorder='little')
+        data_header = int.from_bytes(data[:2])
         logger.debug(f"data_header: {data_header}")
 
         matching_param = self.__engine_parameters.get(data_header)
@@ -260,11 +261,11 @@ class BleDeviceConnection:
 
         # enable indiciations on 001
         await self.set_streaming_mode(client, enabled=False)
+        
 
         # Indicates which parameters are available on the device
         engine_params = await self.request_device_parameter_config(client)
-        self.configure_csv_output(engine_params)
-        self.__engine_parameters = { param.notification_header: param for param in engine_params }
+        self.update_engine_params(engine_params)
 
         data = bytes([0x10, 0x27, 0x0])
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
@@ -280,6 +281,10 @@ class BleDeviceConnection:
         result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
         logger.info("Response: %s, expected: 00c80f01040000000000", result.hex())
         # expected result = 00c80f01040000000000
+
+    def update_engine_params(self, engine_params):
+        self.configure_csv_output(engine_params)
+        self.__engine_parameters = { param.notification_header: param for param in engine_params }
 
     """
     Enable or disable engine data streaming via characteristic notifications
@@ -317,7 +322,7 @@ class BleDeviceConnection:
 
                 decoder = ConfigDecoder()
                 decoder.add(result_data)
-                engine_parameters = decoder.parse_data()
+                engine_parameters = decoder.combine_and_parse_data()
                 logger.info(f"Device parameters: {engine_parameters}")
                 return engine_parameters
             
@@ -556,7 +561,6 @@ class BleConnectionConfig:
     def valid(self):
         return self.__device_name is not None or self.__device_address is not None
     
-
     @property
     def csv_output_raw(self):
         return self.__csv_output_format_raw
