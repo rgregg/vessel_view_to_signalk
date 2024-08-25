@@ -78,7 +78,7 @@ class SignalKPublisher:
             await self.connect_websocket()
             while not self.socket_connected:
                 logger.warn("Unable to connect to signalk websocket. Will retry...")
-                await asyncio.sleep(self.reconnect_interval_seconds)
+                await asyncio.sleep(self.retry_interval_seconds)
                 await self.connect_websocket()
             
             logger.info("Connected to signalk websocket %s", self.websocket_url)
