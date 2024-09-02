@@ -210,7 +210,7 @@ class BleDeviceConnection:
     expected format and then publishes the data using the singalK API connector
     """
     def convert_and_publish_data(self, engine_param: EngineParameter, decoded_value):
-        path = engine_param.get_signalk_path()
+        path = engine_param.signalk_path
         convert_func = Conversion.conversion_for_parameter_type(engine_param.parameter_type)
         output_value = convert_func(decoded_value)
         if path:
