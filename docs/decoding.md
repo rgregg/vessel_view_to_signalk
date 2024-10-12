@@ -108,6 +108,22 @@ two bytes that indicate the available paramaeter and another two bytes for the h
 29. Data streams for a very long time...
 
 
+## APP VALUES
+
+The application lists the following values as being possible:
+
+1.  [x] RPM
+2.  [x] Coolant Temperature
+3.  [x] Battery
+4.  [x] Current Fuel Flow
+5.  [ ] Speed
+6.  [ ] Fuel
+7.  [x] Oil Pressure *
+8.  [ ] Oil Temperature *
+9.  [ ] Coolant Pressure *
+10. [ ] Sea Temperature *
+11. [x] Engine Hours
+12. [ ] Total Fuel Flow
 
 
 ## DISCOVERED VALUES
@@ -152,8 +168,7 @@ Header: 0x7017
 
 Range: 204557 - 208986
 
-Data spikes up around 17:21, then increases linearly until approaching the max value
-Oil Temperature??
+Total Fuel Flow??
 
 
 ### Engine Run Time (00000105-0000-1000-8000-ec55f9f5b963)
@@ -300,5 +315,3 @@ Value: 28b600 0100
 
 ID's appear to repeat with the higher byte for the engine ID - 0000, 0100, 0200, 
 in the data I have available, even though I only have 1 engine.
-
-
