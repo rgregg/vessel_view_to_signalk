@@ -20,7 +20,7 @@ class FuturesQueue:
         future = asyncio.shield(asyncio.Future())
         self.__queue[key] = future
         logger.debug("created new future for %s", key)
-        return asyncio.shield(future)
+        return future
     
     def register_callback(self, key: str, func: callable):
         """Registers a future callback for a key"""
@@ -39,7 +39,7 @@ class FuturesQueue:
             del self.__queue[key]
             future.set_result(value)
         else:
-            logger.debug("triggered future for %s with no listener", key)
+            logger.warning("triggered future for %s with no listener", key)
         
 
     async def wait_for_data(self, key: str, timeout: int, default_value):

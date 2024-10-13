@@ -1,12 +1,16 @@
+"""Test the decoding of data from BLE signal"""
 import logging
 import unittest
-from config_decoder import ConfigDecoder, EngineParameter
+from config_decoder import ConfigDecoder
 
 logger = logging.getLogger(__name__)
 
 class Test_DecoderTests(unittest.IsolatedAsyncioTestCase):
+    """Test decoder implementation"""
     
     def test_simple(self):
+        """Configure a decoder with a sample payload"""
+
         decoder = ConfigDecoder()
         decoder.add(bytes.fromhex("0028b6000100000001000001d2000002e8000003"))
         decoder.add(bytes.fromhex("0170170004960000050a000006401f0007102700"))
@@ -19,11 +23,11 @@ class Test_DecoderTests(unittest.IsolatedAsyncioTestCase):
         decoder.add(bytes.fromhex("0800020700000208000002090000020a0000020b"))
         decoder.add(bytes.fromhex("090000020c0000020d0000020e0000"))
 
-        decoder.parse_data()
+        decoder.combine_and_parse_data()
         assert decoder.has_all_data
 
-    def convert_to_bytes(str):
-        pass
+#    def convert_to_bytes(str):
+#        pass
     
 
 
