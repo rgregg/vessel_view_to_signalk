@@ -1,3 +1,5 @@
+"""Configuration module"""
+
 import logging
 from enum import Enum
 from collections.abc import Iterable
@@ -6,16 +8,14 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigDecoder:
-
+    """Decodes saved configuration data into objects"""
     def __init__(self):
         self.__known_data = []  # array of byte arrays
         self.__has_all_data = None
         self.__parameters = []
     
-    """
-    Adds a new data packet to the decoder
-    """
     def add(self, item):
+        """Adds a new data packet to the decoder"""
         if isinstance(item, Iterable) and not isinstance(item, (str, bytes)):
             self.__known_data.extend(item)
         else:
@@ -24,7 +24,7 @@ class ConfigDecoder:
 
     @property
     def has_all_data(self):
-        # check to see if we have all the data required
+        """Indicates the configuration has all the data required"""
         if self.__has_all_data is None:
             self.combine_and_parse_data()
 
@@ -36,6 +36,7 @@ class ConfigDecoder:
 
     @property
     def engine_parameters(self):
+        """List of engine parameters detected"""
         return self.__parameters
     
     @engine_parameters.setter
@@ -43,51 +44,55 @@ class ConfigDecoder:
         self.__parameters = value
 
     def combine_and_parse_data(self):
+        """Combine data received from the device into one package"""
+        
         # sort known_data by the first byte
         data = self.__known_data
-        logger.debug(f"Starting data: {data}")
+        logger.debug("Starting data: %s", data)
 
         sorted_data = sorted(data, key=lambda x: x[0])
-        logger.debug(f"Sorted data: {sorted_data}")
+        logger.debug("Sorted data: %s", sorted_data)
 
         # drop the first byte of each packet
         clean_data = [byte_array[1:] for byte_array in sorted_data]
 
         # combine the known data into a single byte stream
         combined = b''.join(clean_data)
-        logger.debug(f"Combined data: {combined.hex()}")
+        logger.debug("Combined data: %s", combined.hex())
 
         return self.parse_params(combined)
 
     def parse_params(self, combined_data):
+        """Parse parameters to make sure they are valid"""
+
         # check to see if we have a valid header on the data
         if combined_data[0] != 0x28:
-            logger.warning(f"Unexpected data format - value doesn't start with 0x28: {combined_data.hex()}")
+            logger.warning("Unexpected data format - value doesn't start with 0x28: %s", combined_data.hex())
         #     self.has_all_data = False
         #     raise ValueError("Value of first byte is not expected value.")
 
         # check to see if we have all the data we expect
         length_of_data = int.from_bytes(combined_data[1:2], byteorder='little')
         actual_length = len(combined_data[3:])
-        logger.debug(f"Expected data length {length_of_data}, actual {actual_length}")
+        logger.debug("Expected data length %s, actual %s", length_of_data, actual_length)
         if actual_length != length_of_data:
             self.has_all_data = False
             raise ValueError(f"Expected {length_of_data} bytes, but only have {actual_length}.")
 
         # parse the data into output
         magic_number, parsing_data = ConfigDecoder.pop_bytes(combined_data[3:], 2)
-        logger.debug(f"Magic number was {magic_number.hex()}")
+        logger.debug("Magic number was %s", magic_number.hex())
         found_params = []
         while len(parsing_data) != 0:
             next_param, parsing_data = ConfigDecoder.pop_bytes(parsing_data, 4)
             param_id = int.from_bytes(next_param[:2])
             header_id = int.from_bytes(next_param[2:])
-            logger.info(f"Parameter: {param_id} with header: {header_id}")
+            logger.info("Parameter: %s with header: %s", param_id, header_id)
             found_params.append(EngineParameter(param_id, header_id))
 
             remaining_bytes = len(parsing_data)
-            if remaining_bytes > 0 and remaining_bytes < 4:
-                logger.debug(f"Remaining bytes ({remaining_bytes}) indicate the data is incomplete.")
+            if 0 < remaining_bytes < 4:
+                logger.debug("Remaining bytes (%s) indicate the data is incomplete.", remaining_bytes)
                 self.has_all_data = False
                 raise ValueError("Incorrect data length.")
 
@@ -95,8 +100,10 @@ class ConfigDecoder:
         self.has_all_data = True
         
         return found_params
-        
+    
+    @staticmethod
     def pop_bytes(byte_array, num_bytes):
+        """Pops a count of bytes off the begining of an array"""
         # Extract the first num_bytes
         popped_bytes = byte_array[:num_bytes]
         # Update the original byte array by removing the popped bytes
@@ -105,6 +112,8 @@ class ConfigDecoder:
 
 
 class EngineParameterType(Enum):
+    """Known parameter types for Vessel View"""
+
     ENGINE_RPM = 0
     COOLANT_TEMPERATURE = 1
     BATTERY_VOLTAGE = 2
@@ -125,6 +134,7 @@ class EngineParameterType(Enum):
 
 
 class EngineParameter:
+    """Represents a single engine parameter and the decoded details"""
 
     def __init__(self, parameter: int, notification_header: int):
         self.__parameter_id = parameter
@@ -138,44 +148,51 @@ class EngineParameter:
 
     @property
     def parameter_id(self):
+        """Parameters unique ID"""
         return self.__parameter_id
     
     @property
     def notification_header(self):
+        """The first two bytes of a notiifcation for this parameter"""
         return self.__notification_header
 
     @property
     def enabled(self):
+        """Enable collecting data for this parameter"""
         return self.__param_enabled
     
     @property
     def engine_id(self):
+        """Engine ID"""
         return self.__engine_id
     
     @property
     def parameter_type(self):
+        """Returns the parameter type"""
         return self.__parameter_type
     
     @property
     def signalk_path(self):
+        """Returns the path in SignalK for this parameter"""
         path = self.get_signalk_path()
         return f"propulsion.{self.engine_id}.{path}"
         
     def get_signalk_path(self):
+        """Maps the engine parameter type to SignalK path component"""
         if self.parameter_type == EngineParameterType.ENGINE_RPM:
             return "revolutions"
-        elif self.parameter_type == EngineParameterType.COOLANT_TEMPERATURE:
+        if self.parameter_type == EngineParameterType.COOLANT_TEMPERATURE:
             return "temperature"
-        elif self.parameter_type == EngineParameterType.BATTERY_VOLTAGE:
+        if self.parameter_type == EngineParameterType.BATTERY_VOLTAGE:
             return "alternatorVoltage"
-        elif self.parameter_type == EngineParameterType.ENGINE_RUNTIME:
+        if self.parameter_type == EngineParameterType.ENGINE_RUNTIME:
             return "runTime"
-        elif self.parameter_type == EngineParameterType.CURRENT_FUEL_FLOW:
+        if self.parameter_type == EngineParameterType.CURRENT_FUEL_FLOW:
             return "fuel.rate"
-        elif self.parameter_type == EngineParameterType.OIL_PRESSURE:
+        if self.parameter_type == EngineParameterType.OIL_PRESSURE:
             return "oilPressure"
-        else:
-            logger.warning(f"Unable to map SignalK path for parameter type {self.parameter_type} on engine {self.engine_id}.")
-            return self.parameter_type.name
+        
+        logger.warning("Unable to map SignalK path for parameter type %s on engine %s.", self.parameter_type, self.engine_id)
+        return self.parameter_type.name
 
     

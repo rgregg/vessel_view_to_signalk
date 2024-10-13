@@ -1,13 +1,17 @@
-import asyncio
-import websockets
+"""Module for SignalK data processing"""
+
 import json
 import logging
 import uuid
+import asyncio
+import websockets
 from futures_queue import FuturesQueue
 
 logger = logging.getLogger(__name__)
 
 class SignalKPublisher:
+    """Class for publishing data to SignalK API"""
+
     def __init__(self, config: 'SignalKConfig'):
         self.__config = config
         
@@ -16,25 +20,32 @@ class SignalKPublisher:
         self.__abort = False
         self.__notifications = FuturesQueue()
         self.__auth_token = None
+        self.__task_group = None
 
     @property
     def websocket_url(self):
+        """URL for the SignalK websocket"""
         return self.__config.websocket_url
     
     @property
     def username(self):
+        """Username for authenticating with SignalK"""
         return self.__config.username
     
     @property
     def password(self):
+        """Password for authenticating with SignalK"""
         return self.__config.password
     
     @property
     def retry_interval_seconds(self):
+        """Interval in seconds the system will return the connection
+        if it fails"""
         return self.__config.retry_interval
     
     @property
     def socket_connected(self):
+        """Indicates conncetion status to SignalK API"""
         return self.__socket_connected
     
     @socket_connected.setter
@@ -51,8 +62,11 @@ class SignalKPublisher:
                                                       user_agent_header=user_agent_string
                                                       )
             self.socket_connected = True
+        except TimeoutError:
+            logger.warning("Websocket connection timed out.")
+            self.socket_connected = False
         except OSError:  # TCP connection fails
-            logger.warn("Unable to connect to server: %s", self.websocket_url)
+            logger.warning("Unable to connect to server: %s", self.websocket_url)
             self.socket_connected = False
         except websockets.exceptions.InvalidURI:
             logger.error("Invalid URI: %s", self.websocket_url)
@@ -60,12 +74,11 @@ class SignalKPublisher:
         except websockets.exceptions.InvalidHandshake:
             logger.error("Websocket service error. Check that the service is running and working properly.")
             self.socket_connected = False
-        except TimeoutError:
-            logger.warn("Websocket connection timed out.")
-            self.socket_connected = False
+        
         return self.socket_connected
                 
     async def close(self):
+        """Closes the connection to SignalK API"""
         logger.info("Closing websocket...")
         if self.socket_connected:
             self.__abort = True
@@ -74,10 +87,13 @@ class SignalKPublisher:
         logger.info("Websocket closed.")
 
     async def run(self, task_group):
+        """Starts a run loop for the SignalK websocket"""
+
+        self.__task_group = task_group
         while not self.__abort:
             await self.connect_websocket()
             while not self.socket_connected:
-                logger.warn("Unable to connect to signalk websocket. Will retry...")
+                logger.warning("Unable to connect to signalk websocket. Will retry...")
                 await asyncio.sleep(self.retry_interval_seconds)
                 await self.connect_websocket()
             
@@ -90,27 +106,25 @@ class SignalKPublisher:
             # receive messages
             while self.socket_connected:
                 try:
-                    msg = await self.__websocket.recv()
-                    if msg is not None:
+                    if (msg := await self.__websocket.recv()) is not None:
                         self.process_websocket_message(msg)                    
                 except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError) as e:
-                    logger.error(f"Websocket connection was closed: {e}.")
+                    logger.error("Websocket connection was closed: %s.", e)
                     self.socket_connected = False
 
     def process_websocket_message(self, msg):
+        """Process a received message from the websocket"""
+
         logger.debug("Websocket message received: %s", msg)
-        try:
-            data = json.loads(msg)
-            if "requestId" in data:
-                request_id = data["requestId"]
-                self.__notifications.trigger(request_id, data)
-            else:
-                logger.debug(f"No request ID was in received websocket message: {msg}")
-        except Exception as e:
-            raise
-            logger.warning(f"Error parsing websocket message: {e}")
+        data = json.loads(msg)
+        if "requestId" in data:
+            request_id = data["requestId"]
+            self.__notifications.trigger(request_id, data)
+        else:
+            logger.debug("No request ID was in received websocket message: %s", msg)
 
     async def authenticate(self, username, password):
+        """Authenticate with the SignalK server via websocket"""
         logger.info("Authenticating with websocket...")
 
         login_request = self.generate_request_id()
@@ -124,7 +138,7 @@ class SignalKPublisher:
 
         def process_login(future):
             response_json = future.result()
-            logger.debug(f"response_json: {response_json}")
+            logger.debug("response_json: %s", response_json)
             if response_json is not None:
                 # Check to see if the response was successful
                 if response_json["statusCode"] == 200:
@@ -138,9 +152,11 @@ class SignalKPublisher:
         
 
     def generate_request_id(self):
+        """Generate a new require ID (UUID)"""
         return str(uuid.uuid4())
 
     def generate_delta(self, path, value):
+        """Generates a delta message for SignalK based on a path and value"""
         delta = {
             "requestId": self.generate_request_id(),
             "context": "vessels.self",
@@ -158,19 +174,21 @@ class SignalKPublisher:
         return delta
 
     async def publish_delta(self, path, value):
-        logger.debug(f"Received delta to publish: '{path}', value '{value}'")        
+        """Publishes a delta to the SignalK API"""
+        logger.debug("Received delta to publish: '%s', value '%s'", path, value)
         if self.socket_connected:
             delta = self.generate_delta(path, value)
             try:
                 await self.__websocket.send(json.dumps(delta))
             except websockets.exceptions.ConnectionClosed:
-                logger.warn(f"Websocket connection closed. Data delta may not have been published.")
+                logger.warning("Websocket connection closed. Data delta may not have been published.")
             except Exception as e:
-                logger.warn(f"Error sending on websocket: {e}")
+                logger.warning("Error sending on websocket: %s", e)
         else:
-            logger.warn(f"Websocket connection closed. No data was sent.")
+            logger.warning("Websocket connection closed. No data was sent.")
 
 class SignalKConfig:
+    """Defines the configuration for the SignalK server"""
     def __init__(self):
         self.__websocket_url = None
         self.__username = None
@@ -179,6 +197,7 @@ class SignalKConfig:
 
     @property
     def websocket_url(self):
+        """URL for the SignalK Websocket"""
         return self.__websocket_url
     
     @websocket_url.setter
@@ -187,6 +206,7 @@ class SignalKConfig:
 
     @property
     def username(self):
+        """Username for authenticating with SignalK"""
         return self.__username
     
     @username.setter
@@ -195,6 +215,7 @@ class SignalKConfig:
 
     @property
     def password(self):
+        """Password for authenticating with SignalK"""
         return self.__password
     
     @password.setter
@@ -203,6 +224,7 @@ class SignalKConfig:
 
     @property
     def retry_interval(self):
+        """Retry interval in seconds for connection to SignalK websocket"""
         return self.__retry_interval
     
     @retry_interval.setter
@@ -211,5 +233,6 @@ class SignalKConfig:
 
     @property
     def valid(self):
+        """Indicates if the configuration is valid with required parameters populated"""
         return self.__websocket_url is not None
 

@@ -1,3 +1,5 @@
+"""BLE connection module"""
+
 import asyncio
 import logging
 
@@ -14,13 +16,14 @@ from config_decoder import EngineParameter, ConfigDecoder, EngineParameterType
 logger = logging.getLogger(__name__)
 
 class BleDeviceConnection:
+    """Handles the connection to the BLE hardware device"""
 
     rescan_timeout_seconds = 10
 
     def __init__(self, config: 'BleConnectionConfig', publish_delta_func):
         logger.debug("Created a new instance of decoder class")
         self.__config = config
-        
+
         self.__device = None
         self.__abort = False
         self.__cancel_signal = asyncio.Future()
@@ -28,25 +31,31 @@ class BleDeviceConnection:
         self.__notification_queue = FuturesQueue()
         self.__engine_parameters = {}
         self.__csv_writer = None
+        self.__task_group = None
 
     @property
     def device_address(self):
+        """Returns the hardware address for the device to be located"""
         return self.__config.device_address
     
     @property
     def device_name(self):
+        """Returns the device name for the device to be located"""
         return self.__config.device_name
     
     @property
     def retry_interval(self):
+        """Interval in seconds for retrying when an error occurs"""
         return self.__config.retry_interval
     
     @property
     def engine_parameters(self):
+        """Set of parameters detected from the hardware device"""
         return self.__engine_parameters
     
     @property
     def csv_writer(self):
+        """Instance of a CSV output writer for data logging"""
         return self.__csv_writer
     
     @csv_writer.setter
@@ -54,84 +63,87 @@ class BleDeviceConnection:
         self.__csv_writer = value
     
    
-    def disconnected(self):
+    def cb_disconnected(self):
+        """ Handle when the BLE device disconnects """
+
         logger.info("BLE device has disconnected")
         self.__cancel_signal.done()
 
 
-    """
-    Main run loop for detecting the BLE device and processing data from it
-    """
     async def run(self, task_group):
-        #loop = asyncio.get_event_loop()
+        """Main run loop for detecting the BLE device and processing data from it"""
+        self.__task_group = task_group
         
         while not self.__abort:
             # Loop on device discovery
             while self.__device is None:
-                if self.device_address is not None:
-                    logger.info(f"Scanning for bluetooth device with ID: '{self.device_address}'...")
-                elif self.device_name is not None:
-                    logger.info(f"Scanning for bluetooth device with name: '{self.device_name}'...")
-                
-                async with BleakScanner() as scanner:
-                    async for tuple in scanner.advertisement_data():
-                        device = tuple[0]
-                        logger.debug(f"Found BLE device: {device}")
-                        if self.device_address is not None and device.address == self.device_address:
-                            logger.info(f"Found matching device by address: {device}")
-                            self.__device = device
-                            break
-                        if self.device_name is not None and device.name == self.device_name:
-                            logger.info(f"Found matching device by name: {device}")
-                            self.__device = device
-                            break
-
+                self.scan_for_device()
                 if self.__abort:
                     logger.debug("Aborting BLE connection and exiting loop")
                     return
 
             # Run until the device is disconnected or the process is cancelled
-            logger.info(f"Found BLE device {self.__device}")
-            try:
-                async with BleakClient(self.__device,
-                                    disconnected_callback=self.disconnected
+            logger.info("Found BLE device %s", self.__device)
+            
+            # configure the device and loop until abort or disconnect
+            await self.device_init_and_loop()
+
+            # reset our internal device to none since we are not connected
+            self.__device = None
+
+    async def device_init_and_loop(self):
+        """Initalize BLE device and loop receiving data"""
+        try:
+            async with BleakClient(self.__device,
+                                    disconnected_callback=self.cb_disconnected
                                     ) as client:
-                    logger.debug("Connected.")
+                logger.debug("Connected.")
 
-                    logger.debug("Retriving device identification metadata...")
-                    await self.retrieve_device_info(client)
+                logger.debug("Retriving device identification metadata...")
+                await self.retrieve_device_info(client)
                     
-                    logger.debug("Initalizing VVM...")
-                    await self.initalize_vvm(client)
+                logger.debug("Initalizing VVM...")
+                await self.initalize_vvm(client)
                     
-                    logger.debug("Configuring data streaming notifications...")
-                    await self.setup_data_notifications(client)
+                logger.debug("Configuring data streaming notifications...")
+                await self.setup_data_notifications(client)
 
-                    logger.info("Enabling data streaming from BLE device")
-                    await self.set_streaming_mode(client, enabled=True)
+                logger.info("Enabling data streaming from BLE device")
+                await self.set_streaming_mode(client, enabled=True)
 
                     # run until the device is disconnected or
                     # the operation is terminated
-                    self.__cancel_signal = asyncio.Future()
-                    await self.__cancel_signal
-            except Exception as e:
-                logger.warn(f"Exception from BLE connection: {e}")
+                self.__cancel_signal = asyncio.Future()
+                await self.__cancel_signal
+        except Exception as e:
+            logger.warning("Exception from BLE connection: %s", e)
 
-            self.__device = None
-        #end of self.abort loop
+    async def scan_for_device(self):
+        """Scan for BLE device with matching info"""
 
+        if self.device_address is not None:
+            logger.info("Scanning for bluetooth device with ID: '%s'...", self.device_address)
+        elif self.device_name is not None:
+            logger.info("Scanning for bluetooth device with name: '%s'...", self.device_name)
+                
+        async with BleakScanner() as scanner:
+            async for device_info in scanner.advertisement_data():
+                device = device_info[0]
+                logger.debug("Found BLE device: %s", device)
+                if self.device_address is not None and device.address == self.device_address:
+                    logger.info("Found matching device by address: %s", device)
+                    self.__device = device
+                    break
+                if self.device_name is not None and device.name == self.device_name:
+                    logger.info("Found matching device by name: %s", device)
+                    self.__device = device
+                    break
 
-        def device_disconnected(self, client: BleakClient):
-            # handle the device disconnecting from the system
-            logger.warn("BLE device was disconnected. Will attempt to reconnect.")
-            self.abort = False
-            self.cancel_signal.done()
-
-    """
-    Configure the CSV output logger if enabled - with the engine parameters the connected
-    device supports.
-    """
     def configure_csv_output(self, engine_params):
+        """
+        Configure the CSV output logger if enabled - with the engine parameters the connected
+        device supports.
+        """
         
         if self.__config.csv_output_enabled:
             fieldnames = [ "timestamp" ]
@@ -143,19 +155,21 @@ class BleDeviceConnection:
         else:
             self.csv_writer = None
 
-    """
-    Disconnect from the BLE device and clean up anything we were doing to close down the loop
-    """
     async def close(self):
+        """
+        Disconnect from the BLE device and clean up anything we were doing to close down the loop
+        """
+
         logger.info("Disconnecting from bluetooth device...")
         self.__abort = True
         self.__cancel_signal.done()  # cancels the loop if we have a device and disconnects
         logger.debug("completed close operations")
 
-    """
-    Enable BLE notifications for the charateristics that we're interested in
-    """
     async def setup_data_notifications(self, client: BleakClient):
+        """
+        Enable BLE notifications for the charateristics that we're interested in
+        """
+
         logger.debug("enabling notifications on data chars")
         
         # Iterate over all characteristics in all services and subscribe
@@ -164,27 +178,28 @@ class BleDeviceConnection:
                 if "notify" in characteristic.properties:
                     try:
                         await client.start_notify(characteristic.uuid, self.notification_handler)
-                        logger.debug(f"Subscribed to {characteristic.uuid}")
+                        logger.debug("Subscribed to %s", characteristic.uuid)
                     except Exception as e:
-                        logger.warning(f"Unable to subscribe to {characteristic.uuid}: {e}")
+                        logger.warning("Unable to subscribe to  %s: %s", characteristic.uuid, e)
     
 
-    """
-    Handles BLE notifications and indications
-    """
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
+        """
+        Handles BLE notifications and indications
+        """
+
         #Simple notification handler which prints the data received
         uuid = characteristic.uuid
-        logger.debug(f"Received notification from BLE - UUID: {uuid}; data: {data.hex()}")
+        logger.debug("Received notification from BLE - UUID: %s; data: %s", uuid, data.hex())
 
         # If the notification is about an engine property, we need to push
         # that information into the SignalK client as a property delta
 
         data_header = int.from_bytes(data[:2])
-        logger.debug(f"data_header: {data_header}")
+        logger.debug("data_header: %s", data_header)
 
         matching_param = self.__engine_parameters.get(data_header)
-        logger.debug(f"Matching parameter: {matching_param}")
+        logger.debug("Matching parameter: %s", matching_param)
         
         if matching_param:
             # decode data from byte array to underlying value (remove header bytes and convert to int)
@@ -192,7 +207,7 @@ class BleDeviceConnection:
             self.trigger_event_listener(uuid, decoded_value, False)
             self.convert_and_publish_data(matching_param, decoded_value)
 
-            logger.info(f"Received data for {matching_param.signalk_path} with value {decoded_value}")
+            logger.info("Received data for %s with value %s", matching_param.signalk_path, decoded_value)
             try:
                 if self.csv_writer is not None:
                     if self.__config.csv_output_raw:
@@ -200,43 +215,47 @@ class BleDeviceConnection:
                     else:
                         self.csv_writer.update_property(matching_param.signalk_path, decoded_value)
             except Exception as e:
-                logger.warn(f"Unable to write data to CSV: {e}")
+                logger.warning("Unable to write data to CSV: %s", e)
         else:
-            logger.debug(f"Triggered default notification for UUID: {uuid} with data {data.hex()}")
+            logger.debug("Triggered default notification for UUID: %s with data %s", uuid, data.hex())
             self.trigger_event_listener(uuid, data, True)
 
-    """
-    Converts data using the engine paramater conversion function into the signal k
-    expected format and then publishes the data using the singalK API connector
-    """
     def convert_and_publish_data(self, engine_param: EngineParameter, decoded_value):
+        """
+        Converts data using the engine paramater conversion function into the signal k
+        expected format and then publishes the data using the singalK API connector
+        """
+
         path = engine_param.signalk_path
         convert_func = Conversion.conversion_for_parameter_type(engine_param.parameter_type)
         output_value = convert_func(decoded_value)
         if path:
-            logger.debug(f"Publishing value '{output_value}' to path '{path}'")
+            logger.debug("Publishing value '%s' to path '%s'", output_value, path)
             self.publish_to_signalk(path, output_value)
         else:
-            logger.debug(f"No path found for parameter: '{engine_param}' with value '{output_value}'")
+            logger.debug("No path found for parameter: '%s' with value '%s'", engine_param, output_value)
 
 
-    """
-    Parses the byte stream from a device notification, strips
-    the header bytes and converts the value to an integer with 
-    little endian byte order
-    """
     def strip_header_and_convert_to_int(self, data):
+        """
+        Parses the byte stream from a device notification, strips
+        the header bytes and converts the value to an integer with 
+        little endian byte order
+        """
+
+
         logger.debug("Recieved data from device: %s" ,data)
         data = data[2:]  # remove the header bytes
         value = int.from_bytes(data, byteorder='little')
         logger.debug("Converted to value: %s", value)
         return value
 
-    """
-    Submits the latest information received from the device to the SignalK
-    websocket
-    """
     def publish_to_signalk(self, path, value):
+        """
+        Submits the latest information received from the device to the SignalK
+        websocket
+        """
+
         logger.debug("Publishing delta to path: '%s', value '%s'", path, value)
         if self.__publish_delta_func is not None:
             loop = asyncio.get_event_loop()
@@ -244,20 +263,14 @@ class BleDeviceConnection:
         else:
             logger.info("Cannot publish to signalk")
 
-    """
-    Sets up the VVM based on the patters from the mobile application. This is likely
-    unnecessary and is just being used to receive data from the device but we need
-    more signal to know for sure.
-    """
     async def initalize_vvm(self, client: BleakClient):
-        logger.debug("initalizing VVM device...")
+        """
+        Sets up the VVM based on the patters from the mobile application. This is likely
+        unnecessary and is just being used to receive data from the device but we need
+        more signal to know for sure.
+        """
 
-        # read 0302 as byte array
-        # try:
-        #     data1 = await self.read_char(client, UUIDs.DEVICE_STARTUP_UUID)
-        #     logger.info("Initial configuration read %s", data1.hex())
-        # except Exception:
-        #     pass
+        logger.debug("initalizing VVM device...")
 
         # enable indiciations on 001
         await self.set_streaming_mode(client, enabled=False)
@@ -283,13 +296,15 @@ class BleDeviceConnection:
         # expected result = 00c80f01040000000000
 
     def update_engine_params(self, engine_params):
+        """Update parameters with new values"""
         self.configure_csv_output(engine_params)
         self.__engine_parameters = { param.notification_header: param for param in engine_params }
 
-    """
-    Enable or disable engine data streaming via characteristic notifications
-    """
     async def set_streaming_mode(self, client: BleakClient, enabled):
+        """
+        Enable or disable engine data streaming via characteristic notifications
+        """
+
         if enabled:
             data = bytes([0xD, 0x1])
         else:
@@ -297,13 +312,13 @@ class BleDeviceConnection:
 
         await client.write_gatt_char(UUIDs.DEVICE_CONFIG_UUID, data, response=True)
 
-    """
-    Writes the request to send the parameter conmfiguration from the device
-    via indications on characteristic DEVICE_CONFIG_UUID. This data is returned
-    over a series of indications on the DEVICE_CONFIG_UUID charateristic.
-    """
     async def request_device_parameter_config(self, client: BleakClient):
-        
+        """
+        Writes the request to send the parameter conmfiguration from the device
+        via indications on characteristic DEVICE_CONFIG_UUID. This data is returned
+        over a series of indications on the DEVICE_CONFIG_UUID charateristic.
+        """
+
         logger.info("Requesting device parameter configuration data")
         await client.start_notify(UUIDs.DEVICE_CONFIG_UUID, self.notification_handler)
         
@@ -323,7 +338,7 @@ class BleDeviceConnection:
                 decoder = ConfigDecoder()
                 decoder.add(result_data)
                 engine_parameters = decoder.combine_and_parse_data()
-                logger.info(f"Device parameters: {engine_parameters}")
+                logger.info("Device parameters: %s", engine_parameters)
                 return engine_parameters
             
         except TimeoutError:
@@ -332,12 +347,12 @@ class BleDeviceConnection:
 
 
 
-    """
-    Writes data to the charateristic and waits for a notification that the
-    charateristic data has updated before returning.
-    """
     async def request_configuration_data(self, client: BleakClient, uuid: str, data: bytes):
-        
+        """
+        Writes data to the charateristic and waits for a notification that the
+        charateristic data has updated before returning.
+        """
+
         await client.start_notify(uuid, self.notification_handler)
 
         # add an event lisener to the queue
@@ -345,7 +360,7 @@ class BleDeviceConnection:
 
         future_data_result = self.future_data_for_uuid(uuid)
         await client.write_gatt_char(uuid, data, response=True)
-        
+
         # wait for an indication to arrive on the UUID specified, and then
         # return that data to the caller here.
 
@@ -360,146 +375,152 @@ class BleDeviceConnection:
             await client.stop_notify(uuid)
 
 
-    """
-    Generate a promise for the data that will be received in the future for a given characteristic
-    """
     def future_data_for_uuid(self, uuid: str, key = None):
+        """
+        Generate a promise for the data that will be received
+        in the future for a given characteristic
+        """
+
         logger.debug("future promise for data on uuid: %s, key: %s", uuid, key)
-        id = uuid
+        key_id = uuid
         if key is not None:
-            id = f"{uuid}+{key}"
+            key_id = f"{uuid}+{key}"
 
-        return self.__notification_queue.register(id)
+        return self.__notification_queue.register(key_id)
 
 
-    """
-    Trigger the waiting Futures when data is received
-    """
     def trigger_event_listener(self, uuid: str, data, raw_bytes_from_device):
-        logger.debug(f"triggering event listener for {uuid} with data: {data}")
+        """
+        Trigger the waiting Futures when data is received
+        """
+
+        logger.debug("triggering event listener for %s with data: %s", uuid, data)
         self.__notification_queue.trigger(uuid, data)
         
         # handle promises for data based on the uuid + first byte of the response if raw data
         if raw_bytes_from_device:
             try:
-                id = f"{uuid}+{int(data[0])}"
-                logger.debug(f"triggering notification handler on id: {id}")
-                self.__notification_queue.trigger(id, data)
+                key_id = f"{uuid}+{int(data[0])}"
+                logger.debug("triggering notification handler on id: %s", key_id)
+                self.__notification_queue.trigger(key_id, data)
             except Exception as e:
-                logger.warning(f"Exception triggering notification: {e}")
+                logger.warning("Exception triggering notification: %s", e)
 
-    """
-    Read data from the BLE device with consistent error handling
-    """
     async def read_char(self, client: BleakClient, uuid: str):
+        """
+        Read data from the BLE device with consistent error handling
+        """
+
         if not client.is_connected:
-            logger.warn("BLE device is not connected while trying to read data.")
+            logger.warning("BLE device is not connected while trying to read data.")
             return None
     
         try:
             result = await client.read_gatt_char(uuid)
             return result
         except BleakCharacteristicNotFoundError:
-            logger.warn("BLE device did not have the requested data: %s", uuid)
+            logger.warning("BLE device did not have the requested data: %s", uuid)
             return None
             
 
 
-    """
-    Retrieves the BLE standard data for the device
-    """
     async def retrieve_device_info(self, client: BleakClient):
+        """
+        Retrieves the BLE standard data for the device
+        """
 
         model_number = await self.read_char(client, UUIDs.MODEL_NBR_UUID)
-        logger.info("Model Number: {0}".format("".join(map(chr, model_number))))
+        logger.info("Model Number: %s", "".join([chr(c) for c in model_number]))
         
         device_name = await self.read_char(client, UUIDs.DEVICE_NAME_UUID)
-        logger.info("Device Name: {0}".format("".join(map(chr, device_name))))
+        logger.info("Device Name: %s", "".join([chr(c) for c in device_name]))
 
         manufacturer_name = await self.read_char(client, UUIDs.MANUFACTURER_NAME_UUID)
-        logger.info("Manufacturer Name: {0}".format("".join(map(chr, manufacturer_name))))
+        logger.info("Manufacturer Name: %s", "".join([chr(c) for c in manufacturer_name]))
 
         firmware_revision = await self.read_char(client, UUIDs.FIRMWARE_REV_UUID)
-        logger.info("Firmware Revision: {0}".format("".join(map(chr, firmware_revision))))
+        logger.info("Firmware Revision: %s", "".join([chr(c) for c in firmware_revision]))
 
 
 class UUIDs:
+    """Common UUIDs for this hardware """
     uuid16_lookup = {v: normalize_uuid_16(k) for k, v in uuid16_dict.items()}
 
-    """Standard UUIDs from BLE protocol"""
+    ## Standard UUIDs from BLE protocol
     MODEL_NBR_UUID = uuid16_lookup["Model Number String"]
     DEVICE_NAME_UUID = uuid16_lookup["Device Name"]
     FIRMWARE_REV_UUID = uuid16_lookup["Firmware Revision String"]
     MANUFACTURER_NAME_UUID = uuid16_lookup["Manufacturer Name String"]
 
-    """Manufacturer specific UUIDs"""
+    ## Manufacturer specific UUIDs
     DEVICE_STARTUP_UUID = "00000302-0000-1000-8000-ec55f9f5b963"
     DEVICE_CONFIG_UUID = "00000001-0000-1000-8000-ec55f9f5b963"
     DEVICE_NEXT_UUID = "00000111-0000-1000-8000-ec55f9f5b963"
     DEVICE_201_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
 
-    # """Engine data parameters"""
-    # ENGINE_RPM_UUID = "00000102-0000-1000-8000-ec55f9f5b963"
-    # COOLANT_TEMPERATURE_UUID = "00000103-0000-1000-8000-ec55f9f5b963"
-    # BATTERY_VOLTAGE_UUID = "00000104-0000-1000-8000-ec55f9f5b963"
-    # UNK_105_UUID = "00000105-0000-1000-8000-ec55f9f5b963"
-    # ENGINE_RUNTIME_UUID = "00000106-0000-1000-8000-ec55f9f5b963"
-    # CURRENT_FUEL_FLOW_UUID = "00000107-0000-1000-8000-ec55f9f5b963"
-    # UNK_108_UUID = "00000108-0000-1000-8000-ec55f9f5b963"
-    # UNK_109_UUID = "00000109-0000-1000-8000-ec55f9f5b963"
-    # OIL_PRESSURE_UUID = "0000010a-0000-1000-8000-ec55f9f5b963"
-    # UNK_10B_UUID = "0000010b-0000-1000-8000-ec55f9f5b963"
-    # UNK_10C_UUID = "0000010c-0000-1000-8000-ec55f9f5b963"
-    # UNK_10D_UUID = "0000010d-0000-1000-8000-ec55f9f5b963"   
-
 class Conversion:
+    """Static conversion methods from hardware parameters to SI units"""
+    @staticmethod
     def rpm_to_hertz(rpm):
+        """Convert from RPM to Hertz"""
         return rpm / 60.0
-
+    
+    @staticmethod
     def celsius_to_kelvin(celsius):
+        """Convert from Celsius to Kelvin"""
         return celsius + 273.15
-
+    
+    @staticmethod
     def minutes_to_seconds(minutes):
+        """Convert minutes to seconds"""
         return minutes * 60
-
+    
+    @staticmethod
     def centiliters_to_cubic_meters(cl_per_hour):
+        """Convert centiliters to cubmic meters"""
         # Conversion factors
         m3_per_cl = 0.00001
         seconds_per_hour = 3600.0
         
         m3_per_second = cl_per_hour * m3_per_cl / seconds_per_hour
         return m3_per_second
-
+    
+    @staticmethod
     def decapascals_to_pascals(value):
+        """Convert decapascals to pascals"""
         return value * 10
     
+    @staticmethod
     def millivolts_to_volts(value):
+        """Convert millivolts to volts"""
         return value / 1000.0
     
+    @staticmethod
     def identity_function(value):
+        """No conversion, return the input"""
         return value
     
+    @staticmethod
     def conversion_for_parameter_type(param: EngineParameterType):
+        """Provide the conversion function based on parameter type"""
         if param == EngineParameterType.BATTERY_VOLTAGE:
             return Conversion.millivolts_to_volts
-        elif param == EngineParameterType.COOLANT_TEMPERATURE:
+        if param == EngineParameterType.COOLANT_TEMPERATURE:
             return Conversion.celsius_to_kelvin
-        elif param == EngineParameterType.CURRENT_FUEL_FLOW:
+        if param == EngineParameterType.CURRENT_FUEL_FLOW:
             return Conversion.centiliters_to_cubic_meters
-        elif param == EngineParameterType.ENGINE_RPM:
+        if param == EngineParameterType.ENGINE_RPM:
             return Conversion.rpm_to_hertz
-        elif param == EngineParameterType.ENGINE_RUNTIME:
+        if param == EngineParameterType.ENGINE_RUNTIME:
             return Conversion.minutes_to_seconds
-        elif param == EngineParameterType.OIL_PRESSURE:
+        if param == EngineParameterType.OIL_PRESSURE:
             return Conversion.decapascals_to_pascals
-        else:
-            logger.error(f"Unknown conversion for unknown datatype: {param}")
-            return Conversion.identity_function
-
-
         
+        logger.error("Unknown conversion for unknown datatype: %s", param)
+        return Conversion.identity_function
 
 class BleConnectionConfig:
+    """Configuration information for the BLE connection"""
     def __init__(self):
         self.__device_address = None
         self.__device_name = None
@@ -511,6 +532,7 @@ class BleConnectionConfig:
 
     @property
     def device_address(self):
+        """Device MAC address or UUID"""
         return self.__device_address
     
     @device_address.setter
@@ -519,6 +541,7 @@ class BleConnectionConfig:
     
     @property
     def device_name(self):
+        """Device hardware name"""
         return self.__device_name
     
     @device_name.setter
@@ -527,6 +550,7 @@ class BleConnectionConfig:
 
     @property
     def retry_interval(self):
+        """Return interval for scanning for devices"""
         return self.__retry_interval
     
     @retry_interval.setter
@@ -535,6 +559,7 @@ class BleConnectionConfig:
 
     @property
     def csv_output_enabled(self):
+        """Enable output of data logging to CSV"""
         return self.__csv_output_enabled
     
     @csv_output_enabled.setter
@@ -543,6 +568,7 @@ class BleConnectionConfig:
 
     @property
     def csv_output_file(self):
+        """CSV output file"""
         return self.__csv_output_file
     
     @csv_output_file.setter
@@ -551,6 +577,7 @@ class BleConnectionConfig:
 
     @property
     def csv_output_keep(self):
+        """Number of CSV data files to keep"""
         return self.__csv_output_keep
     
     @csv_output_keep.setter
@@ -559,10 +586,12 @@ class BleConnectionConfig:
 
     @property
     def valid(self):
+        """Checks to make sure the parameters are valid"""
         return self.__device_name is not None or self.__device_address is not None
     
     @property
     def csv_output_raw(self):
+        """Controls if the raw data values or the converted values are written into the CSV file"""
         return self.__csv_output_format_raw
     
     @csv_output_raw.setter

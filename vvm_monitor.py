@@ -1,23 +1,26 @@
+"""Vessel View Mobile module"""
+from logging.handlers import RotatingFileHandler
 import argparse
 import signal
 import logging
 import asyncio
 import os
 import yaml
-
-from logging.handlers import RotatingFileHandler
 from signalk_publisher import SignalKPublisher, SignalKConfig
 from ble_connection import BleDeviceConnection, BleConnectionConfig
 
 logger = logging.getLogger("vvm_monitor")
 
 class VesselViewMobileDataRecorder:
+    """Captures and records data from Vessel View Mobile BLE device"""
     
     def __init__(self):
         self.signalk_socket = None
         self.ble_connection = None
 
     async def main(self):
+        """Main function loop for the program"""
+
         loop = asyncio.get_event_loop()
         loop.add_signal_handler(signal.SIGINT, lambda : asyncio.create_task(self.signal_handler()))
 
@@ -57,18 +60,22 @@ class VesselViewMobileDataRecorder:
                 background_tasks.add(task)
                 task.add_done_callback(background_tasks.discard)
             if self.signalk_socket is not None:
-               task = tg.create_task(self.signalk_socket.run(tg))
-               background_tasks.add(task)
-               task.add_done_callback(background_tasks.discard)
+                task = tg.create_task(self.signalk_socket.run(tg))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
         logger.debug("All event loops are completed")
 
     async def publish_data_func(self, path, value):
+        """Callback for publishing data to the websocket"""
+
         if self.signalk_socket is not None:
             await self.signalk_socket.publish_delta(path, value)
         else:
             logger.debug("Couldn't publish data - no signalk socket")
 
     def parse_arguments(self, config: 'VVMConfig'):
+        """Parse command line arguments"""
+
         parser = argparse.ArgumentParser()
         parser.add_argument(
             "-a",
@@ -124,6 +131,8 @@ class VesselViewMobileDataRecorder:
 
 
     async def signal_handler(self):
+        """Handle the program receiving a signal to shutdown"""
+
         logger.info("Gracefully shutting down...")
 
         if self.ble_connection is not None:
@@ -137,31 +146,29 @@ class VesselViewMobileDataRecorder:
         asyncio.get_event_loop().stop()
 
     def parse_env_variables(self, config : 'VVMConfig'):
-        signalk_url = os.getenv("VVM_SIGNALK_URL")
-        if signalk_url is not None:
+        """Parse configuration from environment variables"""
+
+        if (signalk_url := os.getenv('VVM_SIGNALK_URL')) is not None:
             config.signalk.websocket_url = signalk_url
 
-        ble_device_address = os.getenv("VVM_DEVICE_ADDRESS")
-        if ble_device_address is not None:
+        if (ble_device_address := os.getenv("VVM_DEVICE_ADDRESS")) is not None:
             config.bluetooth.device_address = ble_device_address
 
-        ble_device_name = os.getenv("VVM_DEVICE_NAME")
-        if ble_device_name is not None:
+        if (ble_device_name := os.getenv('VVM_DEVICE_NAME')) is not None:
             config.bluetooth.device_name = ble_device_name
 
-        debug = os.getenv("VVM_DEBUG")
-        if debug is not None:
+        if os.getenv("VVM_DEBUG"):
             config.logging_level = logging.DEBUG
 
-        username = os.getenv("VVM_USERNAME")
-        if username is not None:
+        if (username := os.getenv("VVM_USERNAME")) is not None:
             config.signalk.username = username
 
-        password = os.getenv("VVM_PASSWORD")
-        if password is not None:
+        if (password := os.getenv("VVM_PASSWORD")) is not None:
             config.signalk.password = password
 
     def parse_config_file(self, config: 'VVMConfig'):
+        """Parse configuration from a config file"""
+
         # Read from the vvm_monitor.yaml file
         file_path = "config/vvm_monitor.yaml"
         if not os.path.exists(file_path):
@@ -169,55 +176,63 @@ class VesselViewMobileDataRecorder:
             return
         
         try:
-            with open(file_path, 'r') as file:
-                logger.info(f"Reading configuration from {file_path}.")
+            with open(file_path, 'r', encoding="utf-8") as file:
+                logger.info("Reading configuration from %s.", file_path)
                 data = yaml.safe_load(file)
-                ble_device_config = data.get('ble-device')
-                if ble_device_config is not None:
-                    config.bluetooth.device_address = ble_device_config.get('address')
-                    config.bluetooth.device_name = ble_device_config.get('name')
-                    config.bluetooth.retry_interval = ble_device_config.get('retry-interval-seconds', 30)
-                    csv_data_recording_config = ble_device_config.get('data-recording')
-                    if csv_data_recording_config is not None:
-                        config.bluetooth.csv_output_enabled = csv_data_recording_config.get('enabled', False)
-                        config.bluetooth.csv_output_file = csv_data_recording_config.get('file')
-                        config.bluetooth.csv_output_keep = csv_data_recording_config.get('keep', 10)
-                        config.bluetooth.csv_output_raw = csv_data_recording_config.get('output', 'decoded') == 'raw'
-
-                signalk_config = data.get('signalk')
-                if signalk_config is not None:
-                    config.signalk.websocket_url = signalk_config.get('websocket-url')
-                    config.signalk.username = signalk_config.get('username')
-                    config.signalk.password = signalk_config.get('password')
-                    config.signalk.retry_interval = signalk_config.get('retry-interval-seconds', 30)
-
-                logging_config = data.get('logging')
-                if logging_config is not None:
-                    level = logging_config.get('level', "INFO")
-                    if level is not None:
-                        level = level.upper()
-                        if level == "DEBUG":
-                            config.logging_level = logging.DEBUG
-                        elif level == "WARNING":
-                            config.logging_level = logging.WARNING
-                        elif level == "ERROR":
-                            config.logging_level = logging.ERROR
-                        elif level == "CRITICAL":
-                            config.logging_level = logging.CRITICAL
-                        else:
-                            config.logging_level = logging.INFO
-                    else:
-                        config.logging_level = logging.INFO
-
-                    config.logging_file = logging_config.get('file', "./logs/vvm_monitor.log")
-                    config.logging_keep = logging_config.get('keep', 5)
+                self.parse_ble_device_config(config, data.get('ble-device'))
+                self.parse_signalk_config(config, data.get('signalk'))
+                self.parse_logging_config(config, data.get('logging'))
 
         except Exception as e:
-            logger.warn("Error loading configuration file: {e}")
+            logger.warning("Error loading configuration file: %s", e)
 
+    def parse_logging_config(self, config, logging_config):
+        """Parse logging specific configuration"""
 
+        if logging_config is not None:
+            if (level := logging_config.get('level', "INFO")) is not None:
+                level = level.upper()
+                if level == "DEBUG":
+                    config.logging_level = logging.DEBUG
+                elif level == "WARNING":
+                    config.logging_level = logging.WARNING
+                elif level == "ERROR":
+                    config.logging_level = logging.ERROR
+                elif level == "CRITICAL":
+                    config.logging_level = logging.CRITICAL
+                else:
+                    config.logging_level = logging.INFO
+            else:
+                config.logging_level = logging.INFO
+
+            config.logging_file = logging_config.get('file', "./logs/vvm_monitor.log")
+            config.logging_keep = logging_config.get('keep', 5)
+
+    def parse_signalk_config(self, config, signalk_config):
+        """Parse SignalK specific configuration"""
+
+        if signalk_config is not None:
+            config.signalk.websocket_url = signalk_config.get('websocket-url')
+            config.signalk.username = signalk_config.get('username')
+            config.signalk.password = signalk_config.get('password')
+            config.signalk.retry_interval = signalk_config.get('retry-interval-seconds', 30)
+
+    def parse_ble_device_config(self, config, ble_device_config):
+        """Parse BLE device specific configuration"""
+
+        if ble_device_config is not None:
+            config.bluetooth.device_address = ble_device_config.get('address')
+            config.bluetooth.device_name = ble_device_config.get('name')
+            config.bluetooth.retry_interval = ble_device_config.get('retry-interval-seconds', 30)
+            if (csv_data_recording_config := ble_device_config.get('data-recording')) is not None:
+                config.bluetooth.csv_output_enabled = csv_data_recording_config.get('enabled', False)
+                config.bluetooth.csv_output_file = csv_data_recording_config.get('file')
+                config.bluetooth.csv_output_keep = csv_data_recording_config.get('keep', 10)
+                config.bluetooth.csv_output_raw = csv_data_recording_config.get('output', 'decoded') == 'raw'
 
 class VVMConfig:
+    """Program configuration"""
+
     def __init__(self):
         self._ble_config = BleConnectionConfig()
         self._signalk_config = SignalKConfig()
@@ -228,6 +243,7 @@ class VVMConfig:
     
     @property
     def signalk(self):
+        """Properties for SignalK websocket"""
         return self._signalk_config
     
     @signalk.setter
@@ -236,6 +252,8 @@ class VVMConfig:
     
     @property
     def bluetooth(self):
+        """Properties for BLE device"""
+
         return self._ble_config
     
     @bluetooth.setter
@@ -244,6 +262,7 @@ class VVMConfig:
 
     @property
     def logging_level(self):
+        """Logging output level"""
         return self._logging_level
     
     @logging_level.setter
@@ -252,6 +271,7 @@ class VVMConfig:
 
     @property
     def logging_file(self):
+        """Logging output file"""
         return self._logging_file
     
     @logging_file.setter
@@ -260,6 +280,7 @@ class VVMConfig:
 
     @property
     def logging_keep(self):
+        """Indicates the number of log files to keep"""
         return self._logging_keep
     
     @logging_keep.setter
