@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class SignalKPublisher:
     """Class for publishing data to SignalK API"""
 
-    def __init__(self, config: 'SignalKConfig'):
+    def __init__(self, config: 'SignalKConfig', health_status):
         self.__config = config
         
         self.__websocket = None
@@ -21,6 +21,7 @@ class SignalKPublisher:
         self.__notifications = FuturesQueue()
         self.__auth_token = None
         self.__task_group = None
+        self.__health = health_status
 
     @property
     def websocket_url(self):
@@ -52,6 +53,17 @@ class SignalKPublisher:
     def socket_connected(self, value):
         self.__socket_connected = value
 
+    def set_health(self, value: bool, message: str = None):
+        """Sets the health of the SignalK connection"""
+        self.__health["signalk"] = value
+        if message is None:
+            del self.__health["signalk_error"]
+        else:
+            self.__health["signalk_error"] = message
+            logger.warning(message)
+        
+
+
     async def connect_websocket(self):
         """Connect to the Signal K server using a websocket."""
         logger.info("Connecting to SignalK: %s", self.websocket_url)
@@ -61,20 +73,20 @@ class SignalKPublisher:
                                                       logger=logger,
                                                       user_agent_header=user_agent_string
                                                       )
+            self.set_health(True)
             self.socket_connected = True
         except TimeoutError:
-            logger.warning("Websocket connection timed out.")
+            self.set_health(False, "Websocket connection timed out.")
             self.socket_connected = False
-        except OSError:  # TCP connection fails
-            logger.warning("Unable to connect to server: %s", self.websocket_url)
+        except OSError as e:  # TCP connection fails
+            self.set_health(False, f"Connection failed to '{self.websocket_url}': {e}")
             self.socket_connected = False
         except websockets.exceptions.InvalidURI:
-            logger.error("Invalid URI: %s", self.websocket_url)
+            self.set_health(False, f"Invalid URI: {self.websocket_url}")
             self.socket_connected = False
         except websockets.exceptions.InvalidHandshake:
-            logger.error("Websocket service error. Check that the service is running and working properly.")
+            self.set_health(False, "Websocket service error. Check that the service is running and working properly.")        
             self.socket_connected = False
-        
         return self.socket_connected
                 
     async def close(self):
@@ -83,7 +95,9 @@ class SignalKPublisher:
         if self.socket_connected:
             self.__abort = True
             await self.__websocket.close()
+            self.set_health(False, "websocket closed")
             self.socket_connected = False
+            
         logger.info("Websocket closed.")
 
     async def run(self, task_group):
@@ -109,7 +123,7 @@ class SignalKPublisher:
                     if (msg := await self.__websocket.recv()) is not None:
                         self.process_websocket_message(msg)                    
                 except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError) as e:
-                    logger.error("Websocket connection was closed: %s.", e)
+                    self.set_health(False, f"websocket connection was closed: {e}")
                     self.socket_connected = False
 
     def process_websocket_message(self, msg):

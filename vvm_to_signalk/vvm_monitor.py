@@ -6,6 +6,7 @@ import logging
 import asyncio
 import os
 import yaml
+from quart import Quart, jsonify
 from .signalk_publisher import SignalKPublisher, SignalKConfig
 from .ble_connection import BleDeviceConnection, BleConnectionConfig
 
@@ -17,6 +18,11 @@ class VesselViewMobileDataRecorder:
     def __init__(self):
         self.signalk_socket = None
         self.ble_connection = None
+        self.__health = {"signalk": False, "bluetooth": False}
+
+        # Initialize Flask app as part of the class
+        self.app = Quart(__name__)
+        self.add_quart_routes(self.__health)
 
     async def main(self):
         """Main function loop for the program"""
@@ -44,12 +50,12 @@ class VesselViewMobileDataRecorder:
 
         # start the main loops
         if config.bluetooth.valid:
-            self.ble_connection = BleDeviceConnection(config.bluetooth, self.publish_data_func)
+            self.ble_connection = BleDeviceConnection(config.bluetooth, self.publish_data_func, self.__health)
         else:
             logger.warning("Skipping bluetooth connection - configuration is invalid.")
             
         if config.signalk.valid:
-            self.signalk_socket = SignalKPublisher(config.signalk)
+            self.signalk_socket = SignalKPublisher(config.signalk, self.__health)
         else:
             logger.warning("Skipping signalk connection - configuration is invalid.")
 
@@ -63,6 +69,12 @@ class VesselViewMobileDataRecorder:
                 task = tg.create_task(self.signalk_socket.run(tg))
                 background_tasks.add(task)
                 task.add_done_callback(background_tasks.discard)
+            if config.healthcheck_enable:
+                logger.info("Starting healthcheck on %s:%s", config.healthcheck_ip, config.healthcheck_port)
+                task = tg.create_task(self.run_quart_app(config))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
+
         logger.debug("All event loops are completed")
 
     async def publish_data_func(self, path, value):
@@ -128,7 +140,6 @@ class VesselViewMobileDataRecorder:
             config.signalk.username = args.username
         if args.password is not None:
             config.signalk.password = args.password
-
 
     async def signal_handler(self):
         """Handle the program receiving a signal to shutdown"""
@@ -230,6 +241,28 @@ class VesselViewMobileDataRecorder:
                 config.bluetooth.csv_output_keep = csv_data_recording_config.get('keep', 10)
                 config.bluetooth.csv_output_raw = csv_data_recording_config.get('output', 'decoded') == 'raw'
 
+    def add_quart_routes(self, health):
+        """Create the routes for quart"""
+        # Define your routes here, for example a health check route
+        @self.app.route('/health')
+        def health_check():
+            health_status = {
+                "status": "healthy" if health["signalk"] and health["bluetooth"] else "unhealthy",
+                "signalk": "connected" if health["signalk"] else "disconnected",
+                "bluetooth": "healthy" if health["bluetooth"] else "unhealthy",
+            } 
+            if (error_msg := health.get("signalk_error")) is not None:
+                health_status.update({"signalk_status": error_msg })
+            if (error_msg := health.get("bluetooth_error")) is not None:
+                health_status.update({"bluetooth_status": error_msg })
+            
+            return jsonify(health_status), 200 if health_status.get("status") == "healthy" else 500
+        
+    async def run_quart_app(self, config):
+        """Start the quart app"""
+        # Run the Quart app (async Flask)
+        await self.app.run_task(host=config.healthcheck_ip, port=config.healthcheck_port)
+
 class VVMConfig:
     """Program configuration"""
 
@@ -240,6 +273,10 @@ class VVMConfig:
         self._logging_level = logging.INFO
         self._logging_file = "./logs/vvm_monitor.log"
         self._logging_keep = 5
+
+        self.__healthcheck_enabled = "True"
+        self.__healthcheck_port = "5000"
+        self.__healthcheck_ip = "127.0.0.1"
     
     @property
     def signalk(self):
@@ -288,3 +325,17 @@ class VVMConfig:
         self._logging_keep = value
 
 
+    @property
+    def healthcheck_enable(self):
+        """Determines if health checks are enabled"""
+        return bool(os.getenv("APP_HEALTHCHECK_ENABLE", self.__healthcheck_enabled))
+
+    @property
+    def healthcheck_port(self):
+        """Port for the health check service"""
+        return int(os.getenv("APP_HEALTHCHECK_PORT", self.__healthcheck_port))
+
+    @property
+    def healthcheck_ip(self):
+        """IP address to bind to for healthcheck"""
+        return os.getenv("APP_HEALTHCHECK_IP", self.__healthcheck_ip)

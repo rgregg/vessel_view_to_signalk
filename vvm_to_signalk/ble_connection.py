@@ -19,7 +19,7 @@ class BleDeviceConnection:
 
     rescan_timeout_seconds = 10
 
-    def __init__(self, config: 'BleConnectionConfig', publish_delta_func):
+    def __init__(self, config: 'BleConnectionConfig', publish_delta_func, health_status):
         logger.debug("Created a new instance of decoder class")
         self.__config = config
 
@@ -31,6 +31,7 @@ class BleDeviceConnection:
         self.__engine_parameters = {}
         self.__csv_writer = None
         self.__task_group = None
+        self.__health = health_status
 
     @property
     def device_address(self):
@@ -78,7 +79,7 @@ class BleDeviceConnection:
             while self.__device is None:
                 await self.scan_for_device()
                 if self.__abort:
-                    logger.debug("Aborting BLE connection and exiting loop")
+                    self.set_health(False, "device discovery scan aborted")
                     return
 
             # Run until the device is disconnected or the process is cancelled
@@ -90,13 +91,24 @@ class BleDeviceConnection:
             # reset our internal device to none since we are not connected
             self.__device = None
 
+    def set_health(self, value: bool, message: str = None):
+        """Sets the health of the BLE connection"""
+        self.__health["bluetooth"] = value
+        if message is None:
+            del self.__health["bluetooth_error"]
+        else:
+            self.__health["bluetooth_error"] = message
+            logger.warning(message)
+
+
     async def device_init_and_loop(self):
         """Initalize BLE device and loop receiving data"""
         try:
             async with BleakClient(self.__device,
                                     disconnected_callback=self.cb_disconnected
                                     ) as client:
-                logger.debug("Connected.")
+                
+                self.set_health(True, "Connected to device")
 
                 logger.debug("Retriving device identification metadata...")
                 await self.retrieve_device_info(client)
@@ -115,7 +127,7 @@ class BleDeviceConnection:
                 self.__cancel_signal = asyncio.Future()
                 await self.__cancel_signal
         except Exception as e:
-            logger.warning("Exception from BLE connection: %s", e)
+            self.set_health(False, f"Device error: {e}")
 
     async def scan_for_device(self):
         """Scan for BLE device with matching info"""
@@ -124,6 +136,8 @@ class BleDeviceConnection:
             logger.info("Scanning for bluetooth device with ID: '%s'...", self.device_address)
         elif self.device_name is not None:
             logger.info("Scanning for bluetooth device with name: '%s'...", self.device_name)
+
+        self.set_health(True, "Scanning for device")
                 
         async with BleakScanner() as scanner:
             async for device_info in scanner.advertisement_data():
@@ -163,6 +177,7 @@ class BleDeviceConnection:
         self.__abort = True
         self.__cancel_signal.done()  # cancels the loop if we have a device and disconnects
         logger.debug("completed close operations")
+        self.set_health(False, "shutting down")
 
     async def setup_data_notifications(self, client: BleakClient):
         """
