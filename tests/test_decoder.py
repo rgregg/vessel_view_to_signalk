@@ -1,7 +1,7 @@
 """Test the decoding of data from BLE signal"""
 import logging
 import unittest
-from config_decoder import ConfigDecoder
+from vvm_to_signalk.config_decoder import ConfigDecoder
 
 logger = logging.getLogger(__name__)
 

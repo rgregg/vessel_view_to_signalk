@@ -5,7 +5,7 @@ import logging
 import uuid
 import asyncio
 import websockets
-from futures_queue import FuturesQueue
+from .futures_queue import FuturesQueue
 
 logger = logging.getLogger(__name__)
 

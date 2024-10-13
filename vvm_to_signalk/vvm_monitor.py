@@ -6,8 +6,8 @@ import logging
 import asyncio
 import os
 import yaml
-from signalk_publisher import SignalKPublisher, SignalKConfig
-from ble_connection import BleDeviceConnection, BleConnectionConfig
+from .signalk_publisher import SignalKPublisher, SignalKConfig
+from .ble_connection import BleDeviceConnection, BleConnectionConfig
 
 logger = logging.getLogger("vvm_monitor")
 
@@ -286,11 +286,5 @@ class VVMConfig:
     @logging_keep.setter
     def logging_keep(self, value):
         self._logging_keep = value
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(VesselViewMobileDataRecorder().main())
-    except RuntimeError:
-        pass
 
 

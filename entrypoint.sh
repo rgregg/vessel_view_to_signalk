@@ -5,4 +5,4 @@
 service bluetooth start
 
 # start application
-python vvm_monitor.py
+python -m vvm_to_signalk

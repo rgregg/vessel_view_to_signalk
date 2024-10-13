@@ -6,8 +6,8 @@ import asyncio
 import math
 import sys
 from bleak import BleakGATTCharacteristic
-from ble_connection import BleDeviceConnection, BleConnectionConfig, Conversion
-from config_decoder import ConfigDecoder, EngineParameter, EngineParameterType
+from vvm_to_signalk.ble_connection import BleDeviceConnection, BleConnectionConfig, Conversion
+from vvm_to_signalk.config_decoder import ConfigDecoder, EngineParameter, EngineParameterType
 
 logger = logging.getLogger(__name__)
 

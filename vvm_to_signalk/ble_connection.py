@@ -8,10 +8,9 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.uuids import normalize_uuid_16, uuid16_dict
 from bleak.exc import BleakCharacteristicNotFoundError
 
-from csv_writer import CSVWriter
-from futures_queue import FuturesQueue
-
-from config_decoder import EngineParameter, ConfigDecoder, EngineParameterType
+from .csv_writer import CSVWriter
+from .futures_queue import FuturesQueue
+from .config_decoder import EngineParameter, ConfigDecoder, EngineParameterType
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +76,7 @@ class BleDeviceConnection:
         while not self.__abort:
             # Loop on device discovery
             while self.__device is None:
-                self.scan_for_device()
+                await self.scan_for_device()
                 if self.__abort:
                     logger.debug("Aborting BLE connection and exiting loop")
                     return
