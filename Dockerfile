@@ -10,7 +10,7 @@ WORKDIR /app
 ADD requirements.txt /app
 RUN ["pip", "install", "-r", "requirements.txt", "--no-cache-dir"]
 
-COPY *.py /app/
+COPY vvm_to_signalk/ /app/vvm_to_signalk
 ADD entrypoint.sh /app/
 RUN ["mkdir", "-p", "/app/logs"]
 CMD ["/app/entrypoint.sh"] 
