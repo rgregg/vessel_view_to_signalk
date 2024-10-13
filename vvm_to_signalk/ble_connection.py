@@ -539,7 +539,7 @@ class BleConnectionConfig:
         self.__device_address = None
         self.__device_name = None
         self.__retry_interval = 30
-        self.__csv_output_enabled = True
+        self.__csv_output_enabled = False
         self.__csv_output_file = "./logs/data.csv"
         self.__csv_output_keep = 0
         self.__csv_output_format_raw = False
