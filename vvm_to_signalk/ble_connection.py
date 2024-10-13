@@ -77,21 +77,21 @@ class BleDeviceConnection:
         while not self.__abort:
             # Loop on device discovery
             while self.__device is None:
-                await self.scan_for_device()
+                await self._scan_for_device()
                 if self.__abort:
-                    self.set_health(False, "device discovery scan aborted")
+                    self._set_health(False, "device discovery scan aborted")
                     return
 
             # Run until the device is disconnected or the process is cancelled
             logger.info("Found BLE device %s", self.__device)
             
             # configure the device and loop until abort or disconnect
-            await self.device_init_and_loop()
+            await self._device_init_and_loop()
 
             # reset our internal device to none since we are not connected
             self.__device = None
 
-    def set_health(self, value: bool, message: str = None):
+    def _set_health(self, value: bool, message: str = None):
         """Sets the health of the BLE connection"""
         self.__health["bluetooth"] = value
         if message is None:
@@ -101,35 +101,35 @@ class BleDeviceConnection:
             logger.warning(message)
 
 
-    async def device_init_and_loop(self):
+    async def _device_init_and_loop(self):
         """Initalize BLE device and loop receiving data"""
         try:
             async with BleakClient(self.__device,
                                     disconnected_callback=self.cb_disconnected
                                     ) as client:
                 
-                self.set_health(True, "Connected to device")
+                self._set_health(True, "Connected to device")
 
                 logger.debug("Retriving device identification metadata...")
-                await self.retrieve_device_info(client)
+                await self._retrieve_device_info(client)
                     
                 logger.debug("Initalizing VVM...")
-                await self.initalize_vvm(client)
+                await self._initalize_vvm(client)
                     
                 logger.debug("Configuring data streaming notifications...")
-                await self.setup_data_notifications(client)
+                await self._setup_data_notifications(client)
 
                 logger.info("Enabling data streaming from BLE device")
-                await self.set_streaming_mode(client, enabled=True)
+                await self._set_streaming_mode(client, enabled=True)
 
                     # run until the device is disconnected or
                     # the operation is terminated
                 self.__cancel_signal = asyncio.Future()
                 await self.__cancel_signal
         except Exception as e:
-            self.set_health(False, f"Device error: {e}")
+            self._set_health(False, f"Device error: {e}")
 
-    async def scan_for_device(self):
+    async def _scan_for_device(self):
         """Scan for BLE device with matching info"""
 
         if self.device_address is not None:
@@ -137,7 +137,7 @@ class BleDeviceConnection:
         elif self.device_name is not None:
             logger.info("Scanning for bluetooth device with name: '%s'...", self.device_name)
 
-        self.set_health(True, "Scanning for device")
+        self._set_health(True, "Scanning for device")
                 
         async with BleakScanner() as scanner:
             async for device_info in scanner.advertisement_data():
@@ -152,7 +152,7 @@ class BleDeviceConnection:
                     self.__device = device
                     break
 
-    def configure_csv_output(self, engine_params):
+    def _configure_csv_output(self, engine_params):
         """
         Configure the CSV output logger if enabled - with the engine parameters the connected
         device supports.
@@ -177,9 +177,9 @@ class BleDeviceConnection:
         self.__abort = True
         self.__cancel_signal.done()  # cancels the loop if we have a device and disconnects
         logger.debug("completed close operations")
-        self.set_health(False, "shutting down")
+        self._set_health(False, "shutting down")
 
-    async def setup_data_notifications(self, client: BleakClient):
+    async def _setup_data_notifications(self, client: BleakClient):
         """
         Enable BLE notifications for the charateristics that we're interested in
         """
@@ -217,9 +217,9 @@ class BleDeviceConnection:
         
         if matching_param:
             # decode data from byte array to underlying value (remove header bytes and convert to int)
-            decoded_value = self.strip_header_and_convert_to_int(data)
-            self.trigger_event_listener(uuid, decoded_value, False)
-            self.convert_and_publish_data(matching_param, decoded_value)
+            decoded_value = self._strip_header_and_convert_to_int(data)
+            self._trigger_event_listener(uuid, decoded_value, False)
+            self._convert_and_publish_data(matching_param, decoded_value)
 
             logger.info("Received data for %s with value %s", matching_param.signalk_path, decoded_value)
             try:
@@ -232,9 +232,9 @@ class BleDeviceConnection:
                 logger.warning("Unable to write data to CSV: %s", e)
         else:
             logger.debug("Triggered default notification for UUID: %s with data %s", uuid, data.hex())
-            self.trigger_event_listener(uuid, data, True)
+            self._trigger_event_listener(uuid, data, True)
 
-    def convert_and_publish_data(self, engine_param: EngineParameter, decoded_value):
+    def _convert_and_publish_data(self, engine_param: EngineParameter, decoded_value):
         """
         Converts data using the engine paramater conversion function into the signal k
         expected format and then publishes the data using the singalK API connector
@@ -245,12 +245,12 @@ class BleDeviceConnection:
         output_value = convert_func(decoded_value)
         if path:
             logger.debug("Publishing value '%s' to path '%s'", output_value, path)
-            self.publish_to_signalk(path, output_value)
+            self._publish_to_signalk(path, output_value)
         else:
             logger.debug("No path found for parameter: '%s' with value '%s'", engine_param, output_value)
 
 
-    def strip_header_and_convert_to_int(self, data):
+    def _strip_header_and_convert_to_int(self, data):
         """
         Parses the byte stream from a device notification, strips
         the header bytes and converts the value to an integer with 
@@ -264,7 +264,7 @@ class BleDeviceConnection:
         logger.debug("Converted to value: %s", value)
         return value
 
-    def publish_to_signalk(self, path, value):
+    def _publish_to_signalk(self, path, value):
         """
         Submits the latest information received from the device to the SignalK
         websocket
@@ -277,7 +277,7 @@ class BleDeviceConnection:
         else:
             logger.info("Cannot publish to signalk")
 
-    async def initalize_vvm(self, client: BleakClient):
+    async def _initalize_vvm(self, client: BleakClient):
         """
         Sets up the VVM based on the patters from the mobile application. This is likely
         unnecessary and is just being used to receive data from the device but we need
@@ -287,34 +287,34 @@ class BleDeviceConnection:
         logger.debug("initalizing VVM device...")
 
         # enable indiciations on 001
-        await self.set_streaming_mode(client, enabled=False)
+        await self._set_streaming_mode(client, enabled=False)
         
 
         # Indicates which parameters are available on the device
-        engine_params = await self.request_device_parameter_config(client)
+        engine_params = await self._request_device_parameter_config(client)
         self.update_engine_params(engine_params)
 
         data = bytes([0x10, 0x27, 0x0])
-        result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
+        result = await self._request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
         logger.info("Response: %s, expected: 00102701010001", result.hex())
         # expected result = 00102701010001
 
         data = bytes([0xCA, 0x0F, 0x0])
-        result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
+        result = await self._request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
         logger.info("Response: %s, expected: 00ca0f01010000", result.hex())
         # expected result = 00ca0f01010000
 
         data = bytes([0xC8, 0x0F, 0x0])
-        result = await self.request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
+        result = await self._request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
         logger.info("Response: %s, expected: 00c80f01040000000000", result.hex())
         # expected result = 00c80f01040000000000
 
     def update_engine_params(self, engine_params):
         """Update parameters with new values"""
-        self.configure_csv_output(engine_params)
+        self._configure_csv_output(engine_params)
         self.__engine_parameters = { param.notification_header: param for param in engine_params }
 
-    async def set_streaming_mode(self, client: BleakClient, enabled):
+    async def _set_streaming_mode(self, client: BleakClient, enabled):
         """
         Enable or disable engine data streaming via characteristic notifications
         """
@@ -326,7 +326,7 @@ class BleDeviceConnection:
 
         await client.write_gatt_char(UUIDs.DEVICE_CONFIG_UUID, data, response=True)
 
-    async def request_device_parameter_config(self, client: BleakClient):
+    async def _request_device_parameter_config(self, client: BleakClient):
         """
         Writes the request to send the parameter conmfiguration from the device
         via indications on characteristic DEVICE_CONFIG_UUID. This data is returned
@@ -361,7 +361,7 @@ class BleDeviceConnection:
 
 
 
-    async def request_configuration_data(self, client: BleakClient, uuid: str, data: bytes):
+    async def _request_configuration_data(self, client: BleakClient, uuid: str, data: bytes):
         """
         Writes data to the charateristic and waits for a notification that the
         charateristic data has updated before returning.
@@ -403,7 +403,7 @@ class BleDeviceConnection:
         return self.__notification_queue.register(key_id)
 
 
-    def trigger_event_listener(self, uuid: str, data, raw_bytes_from_device):
+    def _trigger_event_listener(self, uuid: str, data, raw_bytes_from_device):
         """
         Trigger the waiting Futures when data is received
         """
@@ -420,7 +420,7 @@ class BleDeviceConnection:
             except Exception as e:
                 logger.warning("Exception triggering notification: %s", e)
 
-    async def read_char(self, client: BleakClient, uuid: str):
+    async def _read_char(self, client: BleakClient, uuid: str):
         """
         Read data from the BLE device with consistent error handling
         """
@@ -438,21 +438,21 @@ class BleDeviceConnection:
             
 
 
-    async def retrieve_device_info(self, client: BleakClient):
+    async def _retrieve_device_info(self, client: BleakClient):
         """
         Retrieves the BLE standard data for the device
         """
 
-        model_number = await self.read_char(client, UUIDs.MODEL_NBR_UUID)
+        model_number = await self._read_char(client, UUIDs.MODEL_NBR_UUID)
         logger.info("Model Number: %s", "".join([chr(c) for c in model_number]))
         
-        device_name = await self.read_char(client, UUIDs.DEVICE_NAME_UUID)
+        device_name = await self._read_char(client, UUIDs.DEVICE_NAME_UUID)
         logger.info("Device Name: %s", "".join([chr(c) for c in device_name]))
 
-        manufacturer_name = await self.read_char(client, UUIDs.MANUFACTURER_NAME_UUID)
+        manufacturer_name = await self._read_char(client, UUIDs.MANUFACTURER_NAME_UUID)
         logger.info("Manufacturer Name: %s", "".join([chr(c) for c in manufacturer_name]))
 
-        firmware_revision = await self.read_char(client, UUIDs.FIRMWARE_REV_UUID)
+        firmware_revision = await self._read_char(client, UUIDs.FIRMWARE_REV_UUID)
         logger.info("Firmware Revision: %s", "".join([chr(c) for c in firmware_revision]))
 
 

@@ -28,7 +28,7 @@ class BasicGATTCharacteristic(BleakGATTCharacteristic):
     def descriptors(self):
         """Abstract method"""
     
-    def get_descriptor(self, descriptor):
+    def get_descriptor(self, specifier):
         """Abstract method"""
     
     @property
@@ -93,7 +93,7 @@ class Test_DataDecoderTests(unittest.IsolatedAsyncioTestCase):
         config = BleConnectionConfig()
         config.device_name = "UnitTestRunner"
 
-        decoder = BleDeviceConnection(config, None)
+        decoder = BleDeviceConnection(config, None, {})
         self.configure_parameters_live(decoder)
         
         # Engine RPM
