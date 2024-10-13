@@ -20,24 +20,30 @@ class BasicGATTCharacteristic(BleakGATTCharacteristic):
         self.__properties = properties
         self.__value_handle = value_handle
     
-    def add_descriptor(self, value):
+    
+    def add_descriptor(self, descriptor):
         """Abstract method"""
     
+    @property
     def descriptors(self):
         """Abstract method"""
     
-    def get_descriptor(self):
+    def get_descriptor(self, descriptor):
         """Abstract method"""
     
+    @property
     def handle(self):
         """Abstract method"""
     
+    @property
     def properties(self):
         """Abstract method"""
 
+    @property
     def service_handle(self):
         """Abstract method"""
-    
+
+    @property    
     def service_uuid(self):
         """Abstract method"""
     
@@ -183,8 +189,8 @@ class Test_Conversions(unittest.TestCase):
         assert Conversion.decapascals_to_pascals(data_value) == pascals
 
         psi_value = 40.0
-        data_value = psi_value * 689.476
-        Test_Conversions.compare_floats(Conversion.decapascals_to_pascals(data_value), 275790.4, 5)
+        convert_value = psi_value * 689.476
+        Test_Conversions.compare_floats(Conversion.decapascals_to_pascals(convert_value), 275790.4, 5)
 
 
     def test_volts(self):
@@ -197,8 +203,7 @@ class Test_Conversions(unittest.TestCase):
         """Round a value to a particular number of digits"""
         if value == 0:
             return 0
-        else:
-            return round(value, sigfigs - int(math.floor(math.log10(abs(value)))) - 1)
+        return round(value, sigfigs - int(math.floor(math.log10(abs(value)))) - 1)
 
     @staticmethod
     def compare_floats(a, b, sigfigs):
