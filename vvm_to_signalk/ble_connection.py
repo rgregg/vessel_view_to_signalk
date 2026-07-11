@@ -38,6 +38,7 @@ class BleDeviceConnection:
         self._max_engines = 4
         self._active_engine_ids = None   # set from data-item 10000
         self._last_active_ids = None     # set from runtime channel-map parse
+        self._unparsed_seen = set()      # channel keys already warned about this connection
 
     def accept_data_receiver(self, receiver: EngineDataReceiver) -> None:
         """Add a new data receiver to the collection"""
@@ -127,6 +128,7 @@ class BleDeviceConnection:
 
                 self._set_health(True, "Connected to device")
                 connected = True
+                self._reset_unparsed_tracking()
 
                 logger.info("Retrieving device identification metadata...")
                 await self._retrieve_device_info(client)
@@ -277,6 +279,7 @@ class BleDeviceConnection:
 
         item, values = decode_notification(bytes(data), self._dictionary, self._max_engines)
         if item is None:
+            self._log_unparsed_channel_data(uuid, bytes(data))
             return
         if item.id == 10000:
             self._update_active_engines(bytes(data))
@@ -286,6 +289,30 @@ class BleDeviceConnection:
             if self._active_engine_ids is not None and engine_id not in self._active_engine_ids:
                 continue
             self._publish_engine_value(item, engine_id, value)
+
+    def _reset_unparsed_tracking(self):
+        """Clear the per-connection memory of already-warned channel data so a
+        fresh connection re-surfaces any still-undecodable notifications."""
+        self._unparsed_seen.clear()
+
+    def _log_unparsed_channel_data(self, uuid: str, data: bytes):
+        """Surface a channel notification we couldn't decode, once per distinct
+        item-id (or raw payload, if too short to carry one) per connection.
+
+        Channels stream at ~20 Hz and an unknown item's value bytes change on
+        every notification, so we dedup on the item-id rather than the full
+        payload to make novel/unknown data visible without flooding the log.
+        """
+        if len(data) >= 2:
+            key = ("id", int.from_bytes(data[:2], byteorder="little"))
+            what = f"item-id {key[1]}"
+        else:
+            key = ("raw", data.hex())
+            what = "short payload"
+        if key in self._unparsed_seen:
+            return
+        self._unparsed_seen.add(key)
+        logger.warning("Unparsed channel data on %s (%s): %s", uuid, what, data.hex())
 
     def _publish_engine_value(self, item, engine_id, value):
         """Dispatch a decoded engine value to all registered receivers."""

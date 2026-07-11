@@ -263,6 +263,77 @@ def test_notification_handler_skips_hex_when_debug_disabled():
         ble_logger.setLevel(old_level)
 
 
+def test_unparsed_channel_data_is_logged_at_warning(caplog):
+    """A channel notification we can't decode (unknown data-item ID) must be
+    surfaced at WARNING with the raw hex, not silently dropped — otherwise a
+    new/unknown item is invisible at the deployed INFO log level."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    # id 9999 (0x270F -> LE "0f27") is not in the data dictionary.
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar("00000102-0000-1000-8000-ec55f9f5b963"),
+                                  bytearray.fromhex("0f27" + "abcd"))
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("0f27abcd" in m for m in msgs), msgs
+
+
+def test_unparsed_channel_data_deduped_per_connection(caplog):
+    """The same unknown item must be logged only once per connection even as
+    its value bytes change every notification, so a persistent unknown stream
+    at ~20 Hz doesn't flood the log."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    char = FakeChar("00000102-0000-1000-8000-ec55f9f5b963")
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "1234"))
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "0000"))
+    warnings = [r for r in caplog.records if "0f27" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
+def test_distinct_unparsed_items_each_logged(caplog):
+    """Two different unknown item IDs must each be logged once."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    char = FakeChar("00000102-0000-1000-8000-ec55f9f5b963")
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))  # id 9999
+        conn.notification_handler(char, bytearray.fromhex("0e27" + "abcd"))  # id 9998
+    assert any("0f27" in r.getMessage() for r in caplog.records)
+    assert any("0e27" in r.getMessage() for r in caplog.records)
+
+
+def test_unparsed_dedup_resets_between_connections(caplog):
+    """The dedup memory is per-connection: after a reconnect the same unknown
+    item is logged again (a fresh connection may reveal it changed)."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    char = FakeChar("00000102-0000-1000-8000-ec55f9f5b963")
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))
+        conn._reset_unparsed_tracking()  # what a new connection does
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))
+    warnings = [r for r in caplog.records if "0f27" in r.getMessage()]
+    assert len(warnings) == 2, [r.getMessage() for r in warnings]
+
+
+def test_known_item_not_warned(caplog):
+    """A normally-decodable notification must not produce an unparsed warning."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar("00000102-0000-1000-8000-ec55f9f5b963"),
+                                  bytearray.fromhex("0100" + "5802"))  # id 1 RPM
+        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0))
+    assert not any("Unparsed" in r.getMessage() for r in caplog.records)
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr)
     logging.getLogger().setLevel(logging.DEBUG)
