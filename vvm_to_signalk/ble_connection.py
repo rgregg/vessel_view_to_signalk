@@ -38,6 +38,10 @@ class BleDeviceConnection:
         self._max_engines = 4
         self._active_engine_ids = None   # set from data-item 10000
         self._last_active_ids = None     # set from runtime channel-map parse
+        self._unparsed_seen = set()      # channel keys already warned about this connection
+        # Fault Alert (0x201) subscription fallback state (in-memory, per process run).
+        self._fault_subscribe_disabled = False  # set True after a subscribe drops the link
+        self._fault_subscribe_pending = False   # True only between attempting and confirming
 
     def accept_data_receiver(self, receiver: EngineDataReceiver) -> None:
         """Add a new data receiver to the collection"""
@@ -127,6 +131,7 @@ class BleDeviceConnection:
 
                 self._set_health(True, "Connected to device")
                 connected = True
+                self._reset_unparsed_tracking()
 
                 logger.info("Retrieving device identification metadata...")
                 await self._retrieve_device_info(client)
@@ -141,6 +146,11 @@ class BleDeviceConnection:
                 logger.info("Enabling data streaming from BLE device")
                 await self._set_streaming_mode(client, enabled=True)
 
+                # Subscribe to Fault Alert (0x201) indications AFTER streaming is
+                # enabled, mirroring the native app (btsnoop capture). Isolated so
+                # a device that rejects it disables faults but keeps streaming.
+                await self._subscribe_fault_alert(client)
+
                 # Start the streaming monitor if a timeout is configured
                 if self.__config.streaming_timeout > 0:
                     monitor_task = self.__task_group.create_task(self._monitor_streaming())
@@ -154,6 +164,7 @@ class BleDeviceConnection:
         except Exception as e:
             self._set_health(False, f"Device error: {e}")
         finally:
+            self._finalize_fault_subscribe_state()
             if monitor_task:
                 monitor_task.cancel()
             self.__cancel_signal = asyncio.Future()
@@ -255,6 +266,44 @@ class BleDeviceConnection:
             except Exception as e:
                 logger.warning("Could not request fault item %s on %s: %s", item_id, char_uuid, e)
 
+    async def _subscribe_fault_alert(self, client):
+        """Subscribe to Fault Alert (0x201) indications.
+
+        The native app enables these indications *after* stream-start (verified
+        from the btsnoop capture), so the caller invokes this after
+        _set_streaming_mode. 0x201 is indicate-only; bleak.start_notify
+        auto-selects indications. The CCCD write is an acknowledged ATT Write
+        Request, so a device rejection (the #37 ATT 0x0e failure that drops the
+        link) surfaces as an exception here. On any failure we disable fault
+        subscription for the rest of this process run so engine-data streaming
+        still works; a restart re-tries it.
+        """
+        if self._fault_subscribe_disabled:
+            logger.info("Fault Alert (0x201) subscription disabled this run; skipping")
+            return
+        self._fault_subscribe_pending = True
+        try:
+            await client.start_notify(UUIDs.DEVICE_201_UUID, self.notification_handler)
+        except Exception as e:
+            logger.warning("Fault Alert (0x201) subscribe failed (%s); disabling "
+                           "fault subscription for this run", e)
+            self._fault_subscribe_disabled = True
+            self._fault_subscribe_pending = False
+            return
+        logger.info("Subscribed to Fault Alert (0x201) indications")
+        self._fault_subscribe_pending = False
+
+    def _finalize_fault_subscribe_state(self):
+        """Backstop for the fault-subscribe fallback: if a connection ended
+        while a 0x201 subscribe was still in flight (a link drop raced the CCCD
+        ack without raising in _subscribe_fault_alert), attribute the drop to
+        the subscribe and disable it for the rest of this run."""
+        if self._fault_subscribe_pending:
+            logger.warning("Connection ended during Fault Alert (0x201) subscribe; "
+                           "disabling fault subscription for this run")
+            self._fault_subscribe_disabled = True
+        self._fault_subscribe_pending = False
+
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         """Handles BLE notifications and indications."""
         self.__last_message_time = asyncio.get_event_loop().time()
@@ -264,7 +313,7 @@ class BleDeviceConnection:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Notification UUID %s data %s", uuid, data.hex())
 
-        # Fault Alert characteristic is handled separately (Task 8).
+        # Fault Alert characteristic is decoded separately (see _handle_fault_notification).
         if uuid == UUIDs.DEVICE_201_UUID:
             self._handle_fault_notification(bytes(data))
             return
@@ -277,6 +326,7 @@ class BleDeviceConnection:
 
         item, values = decode_notification(bytes(data), self._dictionary, self._max_engines)
         if item is None:
+            self._log_unparsed_channel_data(uuid, bytes(data))
             return
         if item.id == 10000:
             self._update_active_engines(bytes(data))
@@ -286,6 +336,30 @@ class BleDeviceConnection:
             if self._active_engine_ids is not None and engine_id not in self._active_engine_ids:
                 continue
             self._publish_engine_value(item, engine_id, value)
+
+    def _reset_unparsed_tracking(self):
+        """Clear the per-connection memory of already-warned channel data so a
+        fresh connection re-surfaces any still-undecodable notifications."""
+        self._unparsed_seen.clear()
+
+    def _log_unparsed_channel_data(self, uuid: str, data: bytes):
+        """Surface a channel notification we couldn't decode, once per distinct
+        item-id (or raw payload, if too short to carry one) per connection.
+
+        Channels stream at ~20 Hz and an unknown item's value bytes change on
+        every notification, so we dedup on the item-id rather than the full
+        payload to make novel/unknown data visible without flooding the log.
+        """
+        if len(data) >= 2:
+            key = ("id", int.from_bytes(data[:2], byteorder="little"))
+            what = f"item-id {key[1]}"
+        else:
+            key = ("raw", data.hex())
+            what = "short payload"
+        if key in self._unparsed_seen:
+            return
+        self._unparsed_seen.add(key)
+        logger.warning("Unparsed channel data on %s (%s): %s", uuid, what, data.hex())
 
     def _publish_engine_value(self, item, engine_id, value):
         """Dispatch a decoded engine value to all registered receivers."""

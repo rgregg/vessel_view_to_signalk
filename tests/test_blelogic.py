@@ -263,6 +263,202 @@ def test_notification_handler_skips_hex_when_debug_disabled():
         ble_logger.setLevel(old_level)
 
 
+def test_unparsed_channel_data_is_logged_at_warning(caplog):
+    """A channel notification we can't decode (unknown data-item ID) must be
+    surfaced at WARNING with the raw hex, not silently dropped — otherwise a
+    new/unknown item is invisible at the deployed INFO log level."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    # id 9999 (0x270F -> LE "0f27") is not in the data dictionary.
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar("00000102-0000-1000-8000-ec55f9f5b963"),
+                                  bytearray.fromhex("0f27" + "abcd"))
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("0f27abcd" in m for m in msgs), msgs
+
+
+def test_unparsed_channel_data_deduped_per_connection(caplog):
+    """The same unknown item must be logged only once per connection even as
+    its value bytes change every notification, so a persistent unknown stream
+    at ~20 Hz doesn't flood the log."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    char = FakeChar("00000102-0000-1000-8000-ec55f9f5b963")
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "1234"))
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "0000"))
+    warnings = [r for r in caplog.records if "0f27" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
+def test_distinct_unparsed_items_each_logged(caplog):
+    """Two different unknown item IDs must each be logged once."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    char = FakeChar("00000102-0000-1000-8000-ec55f9f5b963")
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))  # id 9999
+        conn.notification_handler(char, bytearray.fromhex("0e27" + "abcd"))  # id 9998
+    assert any("0f27" in r.getMessage() for r in caplog.records)
+    assert any("0e27" in r.getMessage() for r in caplog.records)
+
+
+def test_unparsed_dedup_resets_between_connections(caplog):
+    """The dedup memory is per-connection: after a reconnect the same unknown
+    item is logged again (a fresh connection may reveal it changed)."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    char = FakeChar("00000102-0000-1000-8000-ec55f9f5b963")
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))
+        conn._reset_unparsed_tracking()  # what a new connection does
+        conn.notification_handler(char, bytearray.fromhex("0f27" + "abcd"))
+    warnings = [r for r in caplog.records if "0f27" in r.getMessage()]
+    assert len(warnings) == 2, [r.getMessage() for r in warnings]
+
+
+def test_known_item_not_warned(caplog):
+    """A normally-decodable notification must not produce an unparsed warning."""
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn._dictionary = DataDictionary.load()
+    conn._max_engines = 1
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar("00000102-0000-1000-8000-ec55f9f5b963"),
+                                  bytearray.fromhex("0100" + "5802"))  # id 1 RPM
+        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0))
+    assert not any("Unparsed" in r.getMessage() for r in caplog.records)
+
+
+FAULT_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
+
+
+def _fresh_conn():
+    """A connection on a fresh event loop (prior IsolatedAsyncioTestCase may
+    have closed the loop; __init__ creates an asyncio.Future)."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    return BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+
+
+def test_fault_alert_subscribes_when_enabled():
+    """When not disabled, the helper subscribes to 0x201 and leaves clean state."""
+    conn = _fresh_conn()
+    subscribed = []
+
+    class FakeClient:
+        async def start_notify(self, uuid, _handler):
+            subscribed.append(uuid)
+
+    asyncio.get_event_loop().run_until_complete(conn._subscribe_fault_alert(FakeClient()))
+    assert FAULT_UUID in subscribed
+    assert conn._fault_subscribe_disabled is False
+    assert conn._fault_subscribe_pending is False
+
+
+def test_fault_alert_subscribe_failure_disables_and_skips_next():
+    """A rejected CCCD write (the #37 ATT 0x0e) must be swallowed, disable the
+    subscription, and cause the next attempt to skip start_notify entirely."""
+    conn = _fresh_conn()
+    calls = []
+
+    class FailingClient:
+        async def start_notify(self, uuid, _handler):
+            calls.append(uuid)
+            raise Exception("ATT error 0x0e (Unlikely Error)")
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(conn._subscribe_fault_alert(FailingClient()))  # must not raise
+    assert conn._fault_subscribe_disabled is True
+    assert conn._fault_subscribe_pending is False
+    # Second attempt: disabled -> start_notify not called again
+    loop.run_until_complete(conn._subscribe_fault_alert(FailingClient()))
+    assert calls == [FAULT_UUID]
+
+
+def test_fault_alert_skipped_when_disabled():
+    """A pre-disabled connection never touches 0x201."""
+    conn = _fresh_conn()
+    conn._fault_subscribe_disabled = True
+    called = []
+
+    class FakeClient:
+        async def start_notify(self, uuid, _handler):
+            called.append(uuid)
+
+    asyncio.get_event_loop().run_until_complete(conn._subscribe_fault_alert(FakeClient()))
+    assert called == []
+
+
+def test_finalize_disables_when_pending():
+    """If a connection ends mid-subscribe (drop raced the ack), the backstop
+    attributes it to 0x201 and disables the subscription."""
+    conn = _fresh_conn()
+    conn._fault_subscribe_pending = True
+    conn._finalize_fault_subscribe_state()
+    assert conn._fault_subscribe_disabled is True
+    assert conn._fault_subscribe_pending is False
+
+
+def test_finalize_noop_when_not_pending():
+    """A healthy session that disconnects later (pending already False) must not
+    disable faults."""
+    conn = _fresh_conn()
+    conn._fault_subscribe_pending = False
+    conn._fault_subscribe_disabled = False
+    conn._finalize_fault_subscribe_state()
+    assert conn._fault_subscribe_disabled is False
+
+
+class Test_FaultSubscribeOrdering(unittest.IsolatedAsyncioTestCase):
+    """The 0x201 subscribe must happen AFTER streaming is enabled (native-app order)."""
+
+    async def test_subscribe_happens_after_streaming_enable(self):
+        config = BleConnectionConfig()
+        config.device_name = "UnitTestRunner"
+        config.streaming_timeout = 0  # no monitor task -> no task_group needed
+        conn = BleDeviceConnection(config, {})
+
+        order = []
+
+        async def noop(*_a, **_k):
+            pass
+
+        async def rec_stream(*_a, **_k):
+            order.append("stream")
+
+        async def rec_fault(*_a, **_k):
+            order.append("fault")
+
+        conn._retrieve_device_info = noop
+        conn._initalize_vvm = noop
+        conn._setup_data_notifications = noop
+        conn._request_offline_fault_channels = noop
+        conn._set_streaming_mode = rec_stream
+        conn._subscribe_fault_alert = rec_fault
+
+        class FakeClient:
+            def __init__(self, device, disconnected_callback=None, timeout=None, **_kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+        # Make the "await cancel_signal" return immediately.
+        conn._BleDeviceConnection__cancel_signal.set_result(None)
+
+        with patch("vvm_to_signalk.ble_connection.BleakClient", FakeClient):
+            await conn._device_init_and_loop("fake-device")
+
+        assert order == ["stream", "fault"], order
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr)
     logging.getLogger().setLevel(logging.DEBUG)
