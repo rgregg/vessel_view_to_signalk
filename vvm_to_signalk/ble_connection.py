@@ -313,7 +313,7 @@ class BleDeviceConnection:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Notification UUID %s data %s", uuid, data.hex())
 
-        # Fault Alert characteristic is handled separately (Task 8).
+        # Fault Alert characteristic is decoded separately (see _handle_fault_notification).
         if uuid == UUIDs.DEVICE_201_UUID:
             self._handle_fault_notification(bytes(data))
             return
