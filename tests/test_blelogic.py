@@ -334,6 +334,65 @@ def test_known_item_not_warned(caplog):
     assert not any("Unparsed" in r.getMessage() for r in caplog.records)
 
 
+FAULT_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
+
+
+def _fresh_conn():
+    """A connection on a fresh event loop (prior IsolatedAsyncioTestCase may
+    have closed the loop; __init__ creates an asyncio.Future)."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    return BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+
+
+def test_fault_alert_subscribes_when_enabled():
+    """When not disabled, the helper subscribes to 0x201 and leaves clean state."""
+    conn = _fresh_conn()
+    subscribed = []
+
+    class FakeClient:
+        async def start_notify(self, uuid, _handler):
+            subscribed.append(uuid)
+
+    asyncio.get_event_loop().run_until_complete(conn._subscribe_fault_alert(FakeClient()))
+    assert FAULT_UUID in subscribed
+    assert conn._fault_subscribe_disabled is False
+    assert conn._fault_subscribe_pending is False
+
+
+def test_fault_alert_subscribe_failure_disables_and_skips_next():
+    """A rejected CCCD write (the #37 ATT 0x0e) must be swallowed, disable the
+    subscription, and cause the next attempt to skip start_notify entirely."""
+    conn = _fresh_conn()
+    calls = []
+
+    class FailingClient:
+        async def start_notify(self, uuid, _handler):
+            calls.append(uuid)
+            raise Exception("ATT error 0x0e (Unlikely Error)")
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(conn._subscribe_fault_alert(FailingClient()))  # must not raise
+    assert conn._fault_subscribe_disabled is True
+    assert conn._fault_subscribe_pending is False
+    # Second attempt: disabled -> start_notify not called again
+    loop.run_until_complete(conn._subscribe_fault_alert(FailingClient()))
+    assert calls == [FAULT_UUID]
+
+
+def test_fault_alert_skipped_when_disabled():
+    """A pre-disabled connection never touches 0x201."""
+    conn = _fresh_conn()
+    conn._fault_subscribe_disabled = True
+    called = []
+
+    class FakeClient:
+        async def start_notify(self, uuid, _handler):
+            called.append(uuid)
+
+    asyncio.get_event_loop().run_until_complete(conn._subscribe_fault_alert(FakeClient()))
+    assert called == []
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr)
     logging.getLogger().setLevel(logging.DEBUG)

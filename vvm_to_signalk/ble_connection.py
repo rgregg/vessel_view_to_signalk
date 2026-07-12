@@ -39,6 +39,9 @@ class BleDeviceConnection:
         self._active_engine_ids = None   # set from data-item 10000
         self._last_active_ids = None     # set from runtime channel-map parse
         self._unparsed_seen = set()      # channel keys already warned about this connection
+        # Fault Alert (0x201) subscription fallback state (in-memory, per process run).
+        self._fault_subscribe_disabled = False  # set True after a subscribe drops the link
+        self._fault_subscribe_pending = False   # True only between attempting and confirming
 
     def accept_data_receiver(self, receiver: EngineDataReceiver) -> None:
         """Add a new data receiver to the collection"""
@@ -256,6 +259,33 @@ class BleDeviceConnection:
                 slot += 1
             except Exception as e:
                 logger.warning("Could not request fault item %s on %s: %s", item_id, char_uuid, e)
+
+    async def _subscribe_fault_alert(self, client):
+        """Subscribe to Fault Alert (0x201) indications.
+
+        The native app enables these indications *after* stream-start (verified
+        from the btsnoop capture), so the caller invokes this after
+        _set_streaming_mode. 0x201 is indicate-only; bleak.start_notify
+        auto-selects indications. The CCCD write is an acknowledged ATT Write
+        Request, so a device rejection (the #37 ATT 0x0e failure that drops the
+        link) surfaces as an exception here. On any failure we disable fault
+        subscription for the rest of this process run so engine-data streaming
+        still works; a restart re-tries it.
+        """
+        if self._fault_subscribe_disabled:
+            logger.info("Fault Alert (0x201) subscription disabled this run; skipping")
+            return
+        self._fault_subscribe_pending = True
+        try:
+            await client.start_notify(UUIDs.DEVICE_201_UUID, self.notification_handler)
+        except Exception as e:
+            logger.warning("Fault Alert (0x201) subscribe failed (%s); disabling "
+                           "fault subscription for this run", e)
+            self._fault_subscribe_disabled = True
+            self._fault_subscribe_pending = False
+            return
+        logger.info("Subscribed to Fault Alert (0x201) indications")
+        self._fault_subscribe_pending = False
 
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         """Handles BLE notifications and indications."""
