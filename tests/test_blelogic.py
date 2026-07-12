@@ -393,6 +393,72 @@ def test_fault_alert_skipped_when_disabled():
     assert called == []
 
 
+def test_finalize_disables_when_pending():
+    """If a connection ends mid-subscribe (drop raced the ack), the backstop
+    attributes it to 0x201 and disables the subscription."""
+    conn = _fresh_conn()
+    conn._fault_subscribe_pending = True
+    conn._finalize_fault_subscribe_state()
+    assert conn._fault_subscribe_disabled is True
+    assert conn._fault_subscribe_pending is False
+
+
+def test_finalize_noop_when_not_pending():
+    """A healthy session that disconnects later (pending already False) must not
+    disable faults."""
+    conn = _fresh_conn()
+    conn._fault_subscribe_pending = False
+    conn._fault_subscribe_disabled = False
+    conn._finalize_fault_subscribe_state()
+    assert conn._fault_subscribe_disabled is False
+
+
+class Test_FaultSubscribeOrdering(unittest.IsolatedAsyncioTestCase):
+    """The 0x201 subscribe must happen AFTER streaming is enabled (native-app order)."""
+
+    async def test_subscribe_happens_after_streaming_enable(self):
+        config = BleConnectionConfig()
+        config.device_name = "UnitTestRunner"
+        config.streaming_timeout = 0  # no monitor task -> no task_group needed
+        conn = BleDeviceConnection(config, {})
+
+        order = []
+
+        async def noop(*_a, **_k):
+            pass
+
+        async def rec_stream(*_a, **_k):
+            order.append("stream")
+
+        async def rec_fault(*_a, **_k):
+            order.append("fault")
+
+        conn._retrieve_device_info = noop
+        conn._initalize_vvm = noop
+        conn._setup_data_notifications = noop
+        conn._request_offline_fault_channels = noop
+        conn._set_streaming_mode = rec_stream
+        conn._subscribe_fault_alert = rec_fault
+
+        class FakeClient:
+            def __init__(self, device, disconnected_callback=None, timeout=None, **_kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+        # Make the "await cancel_signal" return immediately.
+        conn._BleDeviceConnection__cancel_signal.set_result(None)
+
+        with patch("vvm_to_signalk.ble_connection.BleakClient", FakeClient):
+            await conn._device_init_and_loop("fake-device")
+
+        assert order == ["stream", "fault"], order
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr)
     logging.getLogger().setLevel(logging.DEBUG)

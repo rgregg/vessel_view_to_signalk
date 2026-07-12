@@ -146,6 +146,11 @@ class BleDeviceConnection:
                 logger.info("Enabling data streaming from BLE device")
                 await self._set_streaming_mode(client, enabled=True)
 
+                # Subscribe to Fault Alert (0x201) indications AFTER streaming is
+                # enabled, mirroring the native app (btsnoop capture). Isolated so
+                # a device that rejects it disables faults but keeps streaming.
+                await self._subscribe_fault_alert(client)
+
                 # Start the streaming monitor if a timeout is configured
                 if self.__config.streaming_timeout > 0:
                     monitor_task = self.__task_group.create_task(self._monitor_streaming())
@@ -159,6 +164,7 @@ class BleDeviceConnection:
         except Exception as e:
             self._set_health(False, f"Device error: {e}")
         finally:
+            self._finalize_fault_subscribe_state()
             if monitor_task:
                 monitor_task.cancel()
             self.__cancel_signal = asyncio.Future()
@@ -285,6 +291,17 @@ class BleDeviceConnection:
             self._fault_subscribe_pending = False
             return
         logger.info("Subscribed to Fault Alert (0x201) indications")
+        self._fault_subscribe_pending = False
+
+    def _finalize_fault_subscribe_state(self):
+        """Backstop for the fault-subscribe fallback: if a connection ended
+        while a 0x201 subscribe was still in flight (a link drop raced the CCCD
+        ack without raising in _subscribe_fault_alert), attribute the drop to
+        the subscribe and disable it for the rest of this run."""
+        if self._fault_subscribe_pending:
+            logger.warning("Connection ended during Fault Alert (0x201) subscribe; "
+                           "disabling fault subscription for this run")
+            self._fault_subscribe_disabled = True
         self._fault_subscribe_pending = False
 
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
