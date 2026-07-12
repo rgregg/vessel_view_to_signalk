@@ -5,6 +5,14 @@ logger = logging.getLogger(__name__)
 
 _FAULT_TYPES = {0: "Unknown", 1: "Universal", 2: "Legacy"}
 
+# Human-readable text for known fault codes, keyed by `fault_key`. Mercury
+# resolves fault text through a cloud API (protocol-map.md §3.5) with no offline
+# dictionary, so this is a hand-maintained map of codes identified from the
+# native app. Unknown codes fall back to the bare key.
+FAULT_TEXT = {
+    "946-6": "Emissions Control Fault",
+}
+
 
 class Fault:
     """A decoded engine fault event."""
@@ -20,14 +28,21 @@ class Fault:
         self.action_id = action_id
 
     def __str__(self):
+        desc = self.description
+        desc_part = f', desc="{desc}"' if desc else ""
         return (f"Fault(type={self.fault_type}, engine={self.engine_position}, "
-                f"active={self.is_active}, key={self.fault_key})")
+                f"active={self.is_active}, key={self.fault_key}{desc_part})")
 
     @property
     def fault_key(self) -> str:
         if self.fault_type == "Universal":
             return f"{self.fault_id}-{self.failure_type_id}"
         return f"{self.fault_id}-Legacy"
+
+    @property
+    def description(self) -> str | None:
+        """Human-readable text for this fault code, or None if not in FAULT_TEXT."""
+        return FAULT_TEXT.get(self.fault_key)
 
 
 def _common_header(data: bytes):

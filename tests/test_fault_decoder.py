@@ -1,4 +1,4 @@
-from vvm_to_signalk.fault_decoder import parse_fault
+from vvm_to_signalk.fault_decoder import parse_fault, Fault
 
 def test_legacy_fault():
     # byte0: type=2 (Legacy) low nibble, engine=1 high nibble -> 0x12
@@ -31,3 +31,20 @@ def test_universal_fault_bitfields():
 
 def test_bad_length_returns_none():
     assert parse_fault(bytes.fromhex("0000")) is None
+
+def test_known_fault_description():
+    # 946-6 is a known code (native app: "Emissions Control Fault").
+    f = Fault("Universal", 1, True, 946, failure_type_id=6)
+    assert f.fault_key == "946-6"
+    assert f.description == "Emissions Control Fault"
+
+def test_unknown_fault_description_is_none():
+    f = Fault("Legacy", 1, True, 1111)
+    assert f.fault_key == "1111-Legacy"
+    assert f.description is None
+
+def test_str_includes_description_only_when_known():
+    known = Fault("Universal", 1, True, 946, failure_type_id=6)
+    assert 'desc="Emissions Control Fault"' in str(known)
+    unknown = Fault("Legacy", 1, True, 1111)
+    assert "desc=" not in str(unknown)
