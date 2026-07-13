@@ -247,16 +247,22 @@ class SignalKPublisher:
         """Publish a fault as a SignalK notification delta."""
         label = engine_label(fault.engine_position, self.__config.engine_labels)
         path = f"notifications.propulsion.{label}.vvmFault.{fault.fault_key}"
+        description = fault.description
+        message = f"Engine {fault.engine_position} fault {fault.fault_key}"
+        if description:
+            message += f": {description}"
+        if not fault.is_active:
+            message += " cleared"
         value = {
             "state": "alarm" if fault.is_active else "normal",
             "method": ["visual", "sound"] if fault.is_active else [],
-            "message": f"Engine {fault.engine_position} fault {fault.fault_key}"
-                       + ("" if fault.is_active else " cleared"),
+            "message": message,
             "vvm": {
                 "faultId": fault.fault_id,
                 "failureTypeId": fault.failure_type_id,
                 "severity": fault.severity,
                 "type": fault.fault_type,
+                "description": description,
             },
         }
         if self.socket_connected:

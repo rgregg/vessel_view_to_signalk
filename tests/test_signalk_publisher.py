@@ -36,6 +36,25 @@ def test_accept_fault_cleared_is_normal():
     assert delta["value"]["method"] == []
 
 
+def test_accept_fault_message_includes_known_description():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
+    asyncio.run(pub.accept_fault(Fault("Universal", 1, True, 946, failure_type_id=6)))
+    delta = ws.sent[0]["updates"][0]["values"][0]
+    assert "Emissions Control Fault" in delta["value"]["message"]
+    assert "946-6" in delta["value"]["message"]
+    assert delta["value"]["vvm"]["description"] == "Emissions Control Fault"
+
+
+def test_accept_fault_message_bare_code_when_unknown():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
+    asyncio.run(pub.accept_fault(Fault("Legacy", 1, True, 1111)))
+    delta = ws.sent[0]["updates"][0]["values"][0]
+    assert "1111-Legacy" in delta["value"]["message"]
+    assert delta["value"]["vvm"]["description"] is None
+
+
 class FakeItem:
     """Minimal stand-in for DataItem used in publisher tests."""
     def __init__(self, item_id=1, name="RPM", units="revs/minute", is_vessel=False):
