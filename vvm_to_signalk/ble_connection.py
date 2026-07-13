@@ -42,6 +42,8 @@ class BleDeviceConnection:
         # Fault Alert (0x201) subscription fallback state (in-memory, per process run).
         self._fault_subscribe_disabled = False  # set True after a subscribe drops the link
         self._fault_subscribe_pending = False   # True only between attempting and confirming
+        # Active paged UserVar string read (protocol-map §4); None when idle.
+        self._paged_read = None
 
     def accept_data_receiver(self, receiver: EngineDataReceiver) -> None:
         """Add a new data receiver to the collection"""
@@ -304,6 +306,60 @@ class BleDeviceConnection:
             self._fault_subscribe_disabled = True
         self._fault_subscribe_pending = False
 
+    async def _read_uservar_string(self, client, item_id, timeout=5.0):
+        """Read a UserVar string item (protocol-map §4) via the paged protocol.
+
+        Writes the 3-byte request and lets notification_handler feed the reply
+        pages into a per-read accumulator. Returns the decoded string, or None on
+        timeout / malformed reply / id mismatch. Best-effort: never raises.
+        """
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self._paged_read = {"item_id": item_id, "buffer": bytearray(),
+                            "expected_len": None, "future": future}
+        try:
+            req = bytes([item_id & 0xFF, (item_id >> 8) & 0xFF, 0x00])
+            await client.write_gatt_char(UUIDs.DEVICE_NEXT_UUID, req, response=True)
+            raw = await asyncio.wait_for(future, timeout)
+        except Exception as e:
+            logger.warning("UserVar read of item %s failed: %s", item_id, e)
+            return None
+        finally:
+            self._paged_read = None
+        if raw is None:
+            return None
+        return self._decode_uservar_string(raw)
+
+    def _feed_paged_read(self, data: bytes):
+        """Feed one 0x111 page into the active paged read (protocol-map §4):
+        page 0 = [00][id:2 LE][msgType][len:2 LE][data...]; page N = [N][data...]."""
+        pr = self._paged_read
+        if pr is None:
+            return
+        future = pr["future"]
+        if future.done():
+            return
+        page = data[0] if data else -1
+        if page == 0:
+            if len(data) < 6:
+                future.set_result(None)
+                return
+            item_id = int.from_bytes(data[1:3], byteorder="little")
+            if item_id != pr["item_id"]:
+                future.set_result(None)
+                return
+            pr["expected_len"] = int.from_bytes(data[4:6], byteorder="little")
+            pr["buffer"].extend(data[6:])
+        else:
+            pr["buffer"].extend(data[1:])
+        if pr["expected_len"] is not None and len(pr["buffer"]) >= pr["expected_len"]:
+            future.set_result(bytes(pr["buffer"][:pr["expected_len"]]))
+
+    @staticmethod
+    def _decode_uservar_string(raw: bytes) -> str:
+        """Decode UserVar string bytes as ASCII, dropping trailing NULs/whitespace."""
+        return raw.decode("ascii", errors="replace").rstrip("\x00").strip()
+
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         """Handles BLE notifications and indications."""
         self.__last_message_time = asyncio.get_event_loop().time()
@@ -321,6 +377,10 @@ class BleDeviceConnection:
         # Config / UserVar exchanges are resolved via registered futures, not decoded
         # as channel data (avoids "unmatched data" noise on every engine notification).
         if uuid in (UUIDs.DEVICE_CONFIG_UUID, UUIDs.DEVICE_NEXT_UUID):
+            # An active paged UserVar string read consumes 0x111 pages directly.
+            if self._paged_read is not None and uuid == UUIDs.DEVICE_NEXT_UUID:
+                self._feed_paged_read(bytes(data))
+                return
             self._trigger_event_listener(uuid, data, True)
             return
 

@@ -457,6 +457,81 @@ class Test_FaultSubscribeOrdering(unittest.IsolatedAsyncioTestCase):
             await conn._device_init_and_loop("fake-device")
 
         assert order == ["stream", "fault"], order
+NEXT_UUID = "00000111-0000-1000-8000-ec55f9f5b963"
+
+
+def _page0(item_id, total_len, chunk):
+    """Build a UserVar page-0 frame: [00][id:2 LE][msgType=01][len:2 LE][chunk]."""
+    return (bytes([0x00]) + item_id.to_bytes(2, "little") + bytes([0x01])
+            + total_len.to_bytes(2, "little") + chunk)
+
+
+def test_decode_uservar_string_strips_nuls():
+    from vvm_to_signalk.ble_connection import BleDeviceConnection
+    assert BleDeviceConnection._decode_uservar_string(b"1.0.0.0\x00\x00") == "1.0.0.0"
+
+
+def test_feed_paged_read_single_page():
+    """A string that fits in page 0 resolves the future with exactly len bytes."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(_page0(4000, 5, b"ABCDE"))
+    assert fut.done() and fut.result() == b"ABCDE"
+
+
+def test_feed_paged_read_multi_page():
+    """A string split across pages is reassembled from page 0 + continuations."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(_page0(4000, 10, b"ABCD"))   # 4 of 10 bytes
+    assert not fut.done()
+    conn._feed_paged_read(bytes([0x01]) + b"EFGH")      # +4 -> 8
+    assert not fut.done()
+    conn._feed_paged_read(bytes([0x02]) + b"IJ")        # +2 -> 10
+    assert fut.done() and fut.result() == b"ABCDEFGHIJ"
+
+
+def test_feed_paged_read_id_mismatch_resolves_none():
+    """A page-0 whose item id doesn't match the request resolves None."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(_page0(9999, 5, b"ABCDE"))
+    assert fut.done() and fut.result() is None
+
+
+def test_read_uservar_string_end_to_end():
+    """_read_uservar_string writes the request and returns the assembled string
+    once the (faked) device feeds its pages."""
+    conn = _fresh_conn()
+
+    class FakeClient:
+        def __init__(self, c):
+            self._c = c
+        async def write_gatt_char(self, uuid, data, response=True):
+            # Device replies with a two-page "SW-12345" value (8 bytes).
+            self._c._feed_paged_read(_page0(4000, 8, b"SW-1"))
+            self._c._feed_paged_read(bytes([0x01]) + b"2345")
+
+    result = asyncio.get_event_loop().run_until_complete(
+        conn._read_uservar_string(FakeClient(conn), 4000))
+    assert result == "SW-12345"
+
+
+def test_paged_read_routed_from_notification_handler():
+    """When a paged read is active, 0x111 notifications feed the accumulator
+    instead of the futures path."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn.notification_handler(FakeChar(NEXT_UUID), bytearray(_page0(4000, 3, b"XYZ")))
+    assert fut.done() and fut.result() == b"XYZ"
 
 
 if __name__ == "__main__":
