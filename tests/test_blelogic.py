@@ -505,6 +505,16 @@ def test_feed_paged_read_id_mismatch_resolves_none():
     assert fut.done() and fut.result() is None
 
 
+def test_feed_paged_read_short_page0_resolves_none():
+    """A page-0 frame shorter than the 6-byte header resolves the read to None."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(bytes([0x00, 0xA0, 0x0F]))  # 3 bytes < 6
+    assert fut.done() and fut.result() is None
+
+
 def test_read_uservar_string_end_to_end():
     """_read_uservar_string writes the request and returns the assembled string
     once the (faked) device feeds its pages."""
@@ -513,14 +523,21 @@ def test_read_uservar_string_end_to_end():
     class FakeClient:
         def __init__(self, c):
             self._c = c
+            self.notified = None
+        async def start_notify(self, uuid, _handler):
+            self.notified = uuid
+        async def stop_notify(self, uuid):
+            pass
         async def write_gatt_char(self, uuid, data, response=True):
             # Device replies with a two-page "SW-12345" value (8 bytes).
             self._c._feed_paged_read(_page0(4000, 8, b"SW-1"))
             self._c._feed_paged_read(bytes([0x01]) + b"2345")
 
+    client = FakeClient(conn)
     result = asyncio.get_event_loop().run_until_complete(
-        conn._read_uservar_string(FakeClient(conn), 4000))
+        conn._read_uservar_string(client, 4000))
     assert result == "SW-12345"
+    assert client.notified == NEXT_UUID
 
 
 def test_paged_read_routed_from_notification_handler():

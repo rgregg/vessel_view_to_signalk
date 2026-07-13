@@ -313,18 +313,21 @@ class BleDeviceConnection:
             self._fault_subscribe_disabled = True
         self._fault_subscribe_pending = False
 
-    async def _read_uservar_string(self, client, item_id, timeout=5.0):
+    async def _read_uservar_string(self, client, item_id, timeout=2.0):
         """Read a UserVar string item (protocol-map §4) via the paged protocol.
 
-        Writes the 3-byte request and lets notification_handler feed the reply
-        pages into a per-read accumulator. Returns the decoded string, or None on
-        timeout / malformed reply / id mismatch. Best-effort: never raises.
+        Reply pages arrive as notifications on 0x111, which the single-page config
+        reads leave disabled, so enable them for this exchange. Writes the 3-byte
+        request and lets notification_handler feed the reply pages into a per-read
+        accumulator. Returns the decoded string, or None on timeout / malformed
+        reply / id mismatch. Best-effort: never raises.
         """
         loop = asyncio.get_event_loop()
         future = loop.create_future()
         self._paged_read = {"item_id": item_id, "buffer": bytearray(),
                             "expected_len": None, "future": future}
         try:
+            await client.start_notify(UUIDs.DEVICE_NEXT_UUID, self.notification_handler)
             req = bytes([item_id & 0xFF, (item_id >> 8) & 0xFF, 0x00])
             await client.write_gatt_char(UUIDs.DEVICE_NEXT_UUID, req, response=True)
             raw = await asyncio.wait_for(future, timeout)
@@ -333,6 +336,10 @@ class BleDeviceConnection:
             return None
         finally:
             self._paged_read = None
+            try:
+                await client.stop_notify(UUIDs.DEVICE_NEXT_UUID)
+            except Exception:
+                pass
         if raw is None:
             return None
         return self._decode_uservar_string(raw)
@@ -518,6 +525,7 @@ class BleDeviceConnection:
         if len(result) >= 7:
             bits = result[6]
             self._active_engine_ids = {e for e in (1, 2, 3, 4) if bits & (1 << (e - 1))}
+            logger.info("Active engines: %s", sorted(self._active_engine_ids))
 
         data = bytes([0xCA, 0x0F, 0x0])
         expected_result = "00ca0f01010000"
