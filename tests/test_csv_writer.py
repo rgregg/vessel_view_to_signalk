@@ -77,3 +77,10 @@ def test_csv_update_active_items_noop():
     cfg = CsvWriterConfig()
     writer = CsvWriter(cfg)
     writer.update_active_items([1, 2, 3])  # should not raise
+
+
+def test_accept_engine_identity_is_noop():
+    """CSV writer ignores engine identity strings (not time-series)."""
+    writer = CsvWriter(CsvWriterConfig({"enabled": False}))
+    # Must not raise and must not write anything.
+    asyncio.run(writer.accept_engine_identity(1, "softwareId", "X"))

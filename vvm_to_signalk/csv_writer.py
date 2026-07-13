@@ -27,6 +27,9 @@ class CsvWriter:
     async def accept_fault(self, fault) -> None:
         """No-op: CSV writer does not record fault notifications."""
 
+    async def accept_engine_identity(self, engine_id: int, kind: str, value: str) -> None:
+        """No-op: CSV writer does not record engine identity strings."""
+
     async def accept_engine_data(self, item, engine_id: int, value) -> None:
         """Record one engine's latest value and schedule a flush."""
         if not self.__config.enabled:

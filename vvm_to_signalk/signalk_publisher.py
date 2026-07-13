@@ -271,6 +271,17 @@ class SignalKPublisher:
             except Exception as e:
                 logger.warning("Error sending fault on websocket: %s", e)
 
+    async def accept_engine_identity(self, engine_id, kind, value):
+        """Publish an engine identity string (Software/Calibration/Serial/ECU IDs)
+        as a SignalK metadata delta at propulsion.<label>.vvm.<kind>."""
+        label = engine_label(engine_id, self.__config.engine_labels)
+        path = f"propulsion.{label}.vvm.{kind}"
+        if self.socket_connected:
+            try:
+                await self.__websocket.send(json.dumps(self.generate_delta(path, value)))
+            except Exception as e:
+                logger.warning("Error sending engine identity on websocket: %s", e)
+
 
 class SignalKConfig:
     """Defines the configuration for the SignalK server"""

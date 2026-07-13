@@ -231,5 +231,21 @@ def test_notification_deduped_until_state_changes():
     assert len(ws.sent) == 2
 
 
+def test_accept_engine_identity_publishes_delta():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
+    asyncio.run(pub.accept_engine_identity(1, "softwareId", "8M0107498"))
+    delta = ws.sent[0]["updates"][0]["values"][0]
+    assert delta["path"] == "propulsion.starboard.vvm.softwareId"
+    assert delta["value"] == "8M0107498"
+
+
+def test_accept_engine_identity_not_connected_is_silent():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = False
+    asyncio.run(pub.accept_engine_identity(1, "serialNumber", "0V123456"))
+    assert ws.sent == []
+
+
 if __name__ == '__main__':
     unittest.main()
