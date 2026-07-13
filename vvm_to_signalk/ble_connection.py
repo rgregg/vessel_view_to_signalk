@@ -140,7 +140,14 @@ class BleDeviceConnection:
                     
                 logger.info("Initalizing VVM...")
                 await self._initalize_vvm(client)
-                    
+
+                # Best-effort engine identity read (Software/Calibration/Serial IDs).
+                # Runs before streaming, matching the app; must never abort the connect.
+                try:
+                    await self._retrieve_engine_identity(client)
+                except Exception as e:
+                    logger.warning("Engine identity read step failed: %s", e)
+
                 logger.info("Configuring data streaming notifications...")
                 await self._setup_data_notifications(client)
                 await self._request_offline_fault_channels(client, self._last_active_ids or [])
@@ -397,6 +404,29 @@ class BleDeviceConnection:
                 continue
             self._publish_engine_value(item, engine_id, value)
 
+    async def _retrieve_engine_identity(self, client):
+        """Read engine identity strings (Software/Calibration/Serial/ECU-Serial IDs)
+        for active engines via UserVar (protocol-map §4), log them, and dispatch to
+        receivers. Best-effort: individual reads that fail are skipped."""
+        bases = (("softwareId", 4000), ("calibrationId", 4004),
+                 ("serialNumber", 4008), ("ecuSerialNumber", 4012))
+        engines = sorted(self._active_engine_ids) if self._active_engine_ids else [1]
+        for engine_id in engines:
+            for kind, base in bases:
+                item_id = base + (engine_id - 1)
+                value = await self._read_uservar_string(client, item_id)
+                if not value:
+                    continue
+                logger.info("Engine %s %s: %s", engine_id, kind, value)
+                self._dispatch_engine_identity(engine_id, kind, value)
+
+    def _dispatch_engine_identity(self, engine_id, kind, value):
+        """Dispatch one engine identity value to all registered receivers."""
+        loop = asyncio.get_event_loop()
+        for receiver in self.__data_receivers:
+            self._track_task(loop.create_task(
+                receiver.accept_engine_identity(engine_id, kind, value)))
+
     def _reset_unparsed_tracking(self):
         """Clear the per-connection memory of already-warned channel data so a
         fresh connection re-surfaces any still-undecodable notifications."""
@@ -482,6 +512,12 @@ class BleDeviceConnection:
         result = await self._request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
         if (expected_result := '00102701010001') != result.hex():
             logger.warning("configuration_data_1 response: %s, expected: 00102701010001", result.hex())
+        # Response is a UserVar page-0 frame for item 10000 (Active Engines); the
+        # engine bitfield is the payload byte at index 6. Capture it so the engine
+        # identity reads target the right engines before streaming begins.
+        if len(result) >= 7:
+            bits = result[6]
+            self._active_engine_ids = {e for e in (1, 2, 3, 4) if bits & (1 << (e - 1))}
 
         data = bytes([0xCA, 0x0F, 0x0])
         expected_result = "00ca0f01010000"

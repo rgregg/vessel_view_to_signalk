@@ -534,6 +534,68 @@ def test_paged_read_routed_from_notification_handler():
     assert fut.done() and fut.result() == b"XYZ"
 
 
+class _FakeIdentityReceiver:
+    """Receiver that captures accept_engine_identity calls."""
+    def __init__(self):
+        self.calls = []
+    async def accept_engine_identity(self, engine_id, kind, value):
+        self.calls.append((engine_id, kind, value))
+
+
+def test_retrieve_engine_identity_reads_four_items_and_dispatches():
+    """For each active engine, reads Software/Calibration/Serial/ECU-Serial by the
+    correct item ids and dispatches them to receivers."""
+    conn = _fresh_conn()
+    conn._active_engine_ids = {1}
+    rx = _FakeIdentityReceiver()
+    conn.accept_data_receiver(rx)
+    reads = {4000: "SW1", 4004: "CAL1", 4008: "SER1", 4012: "ECU1"}
+
+    async def fake_read(client, item_id, *a, **k):
+        return reads.get(item_id)
+    conn._read_uservar_string = fake_read
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(conn._retrieve_engine_identity(None))
+    loop.run_until_complete(asyncio.sleep(0))  # let dispatch tasks run
+    assert (1, "softwareId", "SW1") in rx.calls
+    assert (1, "calibrationId", "CAL1") in rx.calls
+    assert (1, "serialNumber", "SER1") in rx.calls
+    assert (1, "ecuSerialNumber", "ECU1") in rx.calls
+
+
+def test_retrieve_engine_identity_skips_missing_and_never_raises():
+    """A read that returns None is skipped; the step does not raise."""
+    conn = _fresh_conn()
+    conn._active_engine_ids = {1}
+    rx = _FakeIdentityReceiver()
+    conn.accept_data_receiver(rx)
+
+    async def fake_read(client, item_id, *a, **k):
+        return None
+    conn._read_uservar_string = fake_read
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(conn._retrieve_engine_identity(None))
+    loop.run_until_complete(asyncio.sleep(0))
+    assert rx.calls == []
+
+
+def test_retrieve_engine_identity_defaults_to_engine_1():
+    """With no known active engines, defaults to engine 1 (item ids 4000/4004/4008/4012)."""
+    conn = _fresh_conn()
+    conn._active_engine_ids = None
+    seen = []
+
+    async def fake_read(client, item_id, *a, **k):
+        seen.append(item_id)
+        return None
+    conn._read_uservar_string = fake_read
+
+    asyncio.get_event_loop().run_until_complete(conn._retrieve_engine_identity(None))
+    assert seen == [4000, 4004, 4008, 4012]
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr)
     logging.getLogger().setLevel(logging.DEBUG)
