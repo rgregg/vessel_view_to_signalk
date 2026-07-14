@@ -184,15 +184,18 @@ def test_seven_function_gauge_emits_per_flag():
     ws = WS()
     p._SignalKPublisher__websocket = ws
     p.socket_connected = True
-    asyncio.run(p.accept_engine_data(D.by_id(97), 1, 0b00100))
+    # bit 7 = Coolant Temperature Fault (critical), bit 2 = Guardian/Check Engine (not seeded)
+    asyncio.run(p.accept_engine_data(D.by_id(97), 1, (1 << 7) | (1 << 2)))
     paths = {u["updates"][0]["values"][0]["path"]: u["updates"][0]["values"][0]["value"]
              for u in ws.sent}
-    assert "notifications.propulsion.starboard.guardianCheckEngine" in paths
-    assert paths["notifications.propulsion.starboard.guardianCheckEngine"]["state"] == "alarm"
+    assert paths["notifications.propulsion.starboard.coolantTemperatureFault"]["state"] == "alarm"
+    assert paths["notifications.propulsion.starboard.coolantTemperatureFault"]["method"] == ["visual", "sound"]
+    assert paths["notifications.propulsion.starboard.guardianCheckEngine"]["state"] == "alert"
+    assert paths["notifications.propulsion.starboard.guardianCheckEngine"]["method"] == ["visual"]
     assert paths["notifications.propulsion.starboard.oilFault"]["state"] == "normal"
 
 
-def test_mil_on_emits_alarm():
+def test_mil_on_emits_alert():
     p = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
     from vvm_to_signalk.data_dictionary import DataDictionary
     D = DataDictionary.load()
@@ -207,8 +210,27 @@ def test_mil_on_emits_alarm():
     asyncio.run(p.accept_engine_data(D.by_id(106), 1, 1))  # MIL Constant On
     v = ws.sent[0]["updates"][0]["values"][0]
     assert v["path"] == "notifications.propulsion.starboard.malfunctionIndicatorLightMilData"
-    assert v["value"]["state"] == "alarm"
+    assert v["value"]["state"] == "alert"
+    assert v["value"]["method"] == ["visual"]
     assert v["value"]["message"].endswith("MIL Constant On")
+
+
+def test_guardian_cause_noncritical_emits_alert():
+    p = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    from vvm_to_signalk.data_dictionary import DataDictionary
+    D = DataDictionary.load()
+
+    class WS:
+        def __init__(self): self.sent = []
+        async def send(self, m): self.sent.append(json.loads(m))
+
+    ws = WS()
+    p._SignalKPublisher__websocket = ws
+    p.socket_connected = True
+    asyncio.run(p.accept_engine_data(D.by_id(87), 1, 7))  # GC_BREAKIN (not seeded)
+    v = ws.sent[0]["updates"][0]["values"][0]["value"]
+    assert v["state"] == "alert"
+    assert v["method"] == ["visual"]
 
 
 def test_notification_deduped_until_state_changes():

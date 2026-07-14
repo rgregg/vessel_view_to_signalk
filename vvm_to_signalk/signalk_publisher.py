@@ -8,10 +8,11 @@ import websockets
 
 from .futures_queue import FuturesQueue
 from .signalk_mapping import signalk_path, to_si, engine_label, _camel
-from .notification_policy import method_for
+from .notification_policy import method_for, state_for
 
 _OFFLINE_FAULT_IDS = {87, 106}     # enum-style single alarm (Guardian Cause, MIL)
 _BITFIELD_FAULT_IDS = {97}         # one notification per bit (Seven Function Gauge)
+_GUARDIAN_CAUSE_ID = 87            # enum path: distinguishes Guardian (87) from MIL (106)
 
 logger = logging.getLogger(__name__)
 
@@ -215,17 +216,18 @@ class SignalKPublisher:
         label = engine_label(engine_id, self.__config.engine_labels)
         if item.id in _OFFLINE_FAULT_IDS:
             text = item.render_enum(value) or str(int(value))
-            inactive = int(value) == 0  # 0 == GC_NONE / MIL Off
+            is_active = int(value) != 0  # 0 == GC_NONE / MIL Off
+            kind = "guardian" if item.id == _GUARDIAN_CAUSE_ID else "mil"
             await self._send_notification(
                 f"notifications.propulsion.{label}.{_camel(item.name)}",
-                "normal" if inactive else "alarm",
+                state_for(kind, text, is_active),
                 f"Engine {engine_id} {item.name}: {text}")
             return
         if item.id in _BITFIELD_FAULT_IDS:
             for flag_name, flag_val in item.render_bits(value).items():
                 await self._send_notification(
                     f"notifications.propulsion.{label}.{_camel(flag_name)}",
-                    "alarm" if flag_val else "normal",
+                    state_for("bitfield", flag_name, bool(flag_val)),
                     f"Engine {engine_id} {flag_name}: {'active' if flag_val else 'clear'}")
             return
         path = signalk_path(item, engine_id, self.__config.engine_labels,
