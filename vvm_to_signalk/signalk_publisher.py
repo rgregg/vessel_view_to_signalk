@@ -247,7 +247,8 @@ class SignalKPublisher:
                 logger.warning("Error sending on websocket: %s", e)
 
     async def accept_fault(self, fault):
-        """Publish a fault as a SignalK notification delta."""
+        """Publish a fault as a SignalK notification delta (quiet-by-default:
+        faults are visual-only unless their key is on the critical allowlist)."""
         label = engine_label(fault.engine_position, self.__config.engine_labels)
         path = f"notifications.propulsion.{label}.vvmFault.{fault.fault_key}"
         description = fault.description
@@ -256,23 +257,18 @@ class SignalKPublisher:
             message += f": {description}"
         if not fault.is_active:
             message += " cleared"
-        value = {
-            "state": "alarm" if fault.is_active else "normal",
-            "method": ["visual", "sound"] if fault.is_active else [],
-            "message": message,
-            "vvm": {
-                "faultId": fault.fault_id,
-                "failureTypeId": fault.failure_type_id,
-                "severity": fault.severity,
-                "type": fault.fault_type,
-                "description": description,
-            },
+        extra = {
+            "faultId": fault.fault_id,
+            "failureTypeId": fault.failure_type_id,
+            "severity": fault.severity,
+            "type": fault.fault_type,
+            "description": description,
         }
-        if self.socket_connected:
-            try:
-                await self.__websocket.send(json.dumps(self.generate_delta(path, value)))
-            except Exception as e:
-                logger.warning("Error sending fault on websocket: %s", e)
+        await self._send_notification(
+            path,
+            state_for("fault", fault.fault_key, fault.is_active),
+            message,
+            extra=extra)
 
     async def accept_engine_identity(self, engine_id, kind, value):
         """Publish an engine identity string (Software/Calibration/Serial/ECU IDs)

@@ -22,8 +22,8 @@ def test_accept_fault_emits_notification():
     asyncio.run(pub.accept_fault(fault))
     delta = ws.sent[0]["updates"][0]["values"][0]
     assert delta["path"] == "notifications.propulsion.starboard.vvmFault.1111-Legacy"
-    assert delta["value"]["state"] == "alarm"
-    assert delta["value"]["method"] == ["visual", "sound"]
+    assert delta["value"]["state"] == "alert"
+    assert delta["value"]["method"] == ["visual"]
     assert delta["value"]["vvm"]["faultId"] == 1111
 
 
