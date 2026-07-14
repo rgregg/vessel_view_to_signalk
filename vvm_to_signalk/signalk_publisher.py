@@ -8,6 +8,7 @@ import websockets
 
 from .futures_queue import FuturesQueue
 from .signalk_mapping import signalk_path, to_si, engine_label, _camel
+from .notification_policy import method_for
 
 _OFFLINE_FAULT_IDS = {87, 106}     # enum-style single alarm (Guardian Cause, MIL)
 _BITFIELD_FAULT_IDS = {97}         # one notification per bit (Seven Function Gauge)
@@ -199,7 +200,7 @@ class SignalKPublisher:
         if not self.socket_connected:
             return
         value = {"state": state,
-                 "method": ["visual", "sound"] if state == "alarm" else [],
+                 "method": method_for(state),
                  "message": message}
         if extra:
             value["vvm"] = extra

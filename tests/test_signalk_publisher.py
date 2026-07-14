@@ -247,5 +247,14 @@ def test_accept_engine_identity_not_connected_is_silent():
     assert ws.sent == []
 
 
+def test_send_notification_alert_is_visual_only():
+    p = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); p._SignalKPublisher__websocket = ws; p.socket_connected = True
+    asyncio.run(p._send_notification("notifications.test.path", "alert", "hi"))
+    v = ws.sent[0]["updates"][0]["values"][0]["value"]
+    assert v["state"] == "alert"
+    assert v["method"] == ["visual"]
+
+
 if __name__ == '__main__':
     unittest.main()
