@@ -9,6 +9,8 @@ Reads docs/bt-logs/*.log, keeps ATT Handle-Value Notifications whose 2-byte
 little-endian item-id is present in the data dictionary (i.e. real channel
 data; config/UserVar indications are excluded), dedups identical payloads, caps
 20 distinct payloads per handle, and writes tests/fixtures/capture_healthy.jsonl.
+Multi-fragment ACL packets (continuation flag set) are silently skipped; all
+frames in the current captures fit in a single fragment.
 """
 
 import glob
@@ -50,6 +52,8 @@ def parse_att_notification(data):
     if len(body) < 8:
         return None
     _acl_handle, _acl_len = struct.unpack("<HH", body[0:4])
+    if len(body) < 4 + _acl_len:
+        return None
     l2 = body[4:]
     l2len, cid = struct.unpack("<HH", l2[0:4])
     if cid != 0x0004:  # ATT channel
