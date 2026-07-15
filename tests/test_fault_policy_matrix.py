@@ -92,6 +92,33 @@ def test_bitfield_matrix_each_bit_alone():
         assert matches[0]["method"] == METHOD[expected]
 
 
+def test_bitfield_matrix_multibit_combo_independent():
+    """A value with two bits set classifies each flag independently in one emission."""
+    item = D.by_id(97)
+    # Discover one critical bit and one non-critical bit from the live dictionary.
+    all_flags = item.render_bits(0xFF)  # {name: 1} for every non-reserved bit
+    positions = {}
+    for pos in range(8):
+        active = [n for n, b in item.render_bits(1 << pos).items() if b]
+        if active:
+            positions[active[0]] = pos
+    critical = next(n for n in positions if n in CRITICAL_BITFIELD_FLAGS)
+    noncritical = next(n for n in positions if n not in CRITICAL_BITFIELD_FLAGS)
+    value = (1 << positions[critical]) | (1 << positions[noncritical])
+
+    pub, ws = _fresh_pub()
+    asyncio.run(pub.accept_engine_data(item, 1, value))
+
+    def state_method(name):
+        m = [v["value"] for v in _deltas(ws)
+             if v["value"]["message"].endswith(f"{name}: active")]
+        assert len(m) == 1, f"expected one active delta for {name}"
+        return m[0]["state"], m[0]["method"]
+
+    assert state_method(critical) == ("alarm", METHOD["alarm"])
+    assert state_method(noncritical) == ("alert", METHOD["alert"])
+
+
 def test_legacy_fault_is_alert_when_active_normal_when_cleared():
     pub, ws = _fresh_pub()
     asyncio.run(pub.accept_fault(Fault("Legacy", 1, True, 1111)))
@@ -109,6 +136,7 @@ def test_legacy_fault_is_alert_when_active_normal_when_cleared():
 def test_universal_fault_severity_never_changes_state():
     for severity in range(8):
         action, failure, fault_id = 300, 12, 2222
+        # Bit layout mirrors fault_decoder.parse_fault (severity<<0, action<<3, failure<<35, fault_id<<42).
         packed = (severity & 0x7) | ((action & 0x1FF) << 3) | ((failure & 0x7F) << 35) \
             | ((fault_id & 0xFFFF) << 42)
         body = packed.to_bytes(8, "little")[:7]
@@ -123,6 +151,8 @@ def test_universal_fault_severity_never_changes_state():
 
 
 def test_allowlist_labels_exist_in_dictionary():
+    # Direction: allowlist ⊆ dictionary — catches a renamed allowlist label. (A newly
+    # added critical enum left unclassified would stay silent by design, not caught here.)
     guardian_labels = set(D.by_id(87).enum.values())
     assert CRITICAL_GUARDIAN_CAUSES <= guardian_labels, \
         f"stale Guardian labels: {CRITICAL_GUARDIAN_CAUSES - guardian_labels}"
