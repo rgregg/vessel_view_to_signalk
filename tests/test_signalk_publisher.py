@@ -41,9 +41,9 @@ def test_accept_fault_message_includes_known_description():
     ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
     asyncio.run(pub.accept_fault(Fault("Universal", 1, True, 946, failure_type_id=6)))
     delta = ws.sent[0]["updates"][0]["values"][0]
-    assert "Emissions Control Fault" in delta["value"]["message"]
+    assert "Catalyst oxygen storage capacity (starboard)" in delta["value"]["message"]
     assert "946-6" in delta["value"]["message"]
-    assert delta["value"]["vvm"]["description"] == "Emissions Control Fault"
+    assert delta["value"]["vvm"]["description"] == "Catalyst oxygen storage capacity (starboard)"
 
 
 def test_accept_fault_message_bare_code_when_unknown():

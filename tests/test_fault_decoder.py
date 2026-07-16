@@ -36,7 +36,7 @@ def test_known_fault_description():
     # 946-6 is a known code (native app: "Emissions Control Fault").
     f = Fault("Universal", 1, True, 946, failure_type_id=6)
     assert f.fault_key == "946-6"
-    assert f.description == "Emissions Control Fault"
+    assert f.description == "Catalyst oxygen storage capacity (starboard)"
 
 def test_unknown_fault_description_is_none():
     f = Fault("Legacy", 1, True, 1111)
@@ -45,6 +45,23 @@ def test_unknown_fault_description_is_none():
 
 def test_str_includes_description_only_when_known():
     known = Fault("Universal", 1, True, 946, failure_type_id=6)
-    assert 'desc="Emissions Control Fault"' in str(known)
+    assert 'desc="Catalyst oxygen storage capacity (starboard)"' in str(known)
     unknown = Fault("Legacy", 1, True, 1111)
     assert "desc=" not in str(unknown)
+
+def test_known_fault_title_and_advisory():
+    f = Fault("Universal", 1, True, 1109, failure_type_id=23)
+    assert f.description == "Emergency stop"
+    assert f.advisory.startswith("Check lanyard")
+
+
+def test_known_fault_without_advisory():
+    f = Fault("Universal", 1, True, 946, failure_type_id=6)
+    assert f.description == "Catalyst oxygen storage capacity (starboard)"
+    assert f.advisory is None
+
+
+def test_unknown_fault_has_no_text():
+    f = Fault("Legacy", 1, True, 1111)
+    assert f.description is None
+    assert f.advisory is None
