@@ -61,7 +61,7 @@ def test_accept_fault_includes_advisory_in_vvm():
     ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
     asyncio.run(pub.accept_fault(Fault("Universal", 1, True, 1104, failure_type_id=21)))
     v = ws.sent[0]["updates"][0]["values"][0]["value"]
-    assert v["vvm"]["advisory"].startswith("Drive lube is low")
+    assert v["vvm"]["advisory"] == "Drive lube is low. Continued operation may cause damage."
 
 
 class FakeItem:

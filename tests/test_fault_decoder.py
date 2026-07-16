@@ -33,7 +33,7 @@ def test_bad_length_returns_none():
     assert parse_fault(bytes.fromhex("0000")) is None
 
 def test_known_fault_description():
-    # 946-6 is a known code (native app: "Emissions Control Fault").
+    # 946-6 native app title: "Catalyst oxygen storage capacity (starboard)".
     f = Fault("Universal", 1, True, 946, failure_type_id=6)
     assert f.fault_key == "946-6"
     assert f.description == "Catalyst oxygen storage capacity (starboard)"
