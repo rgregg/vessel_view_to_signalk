@@ -43,8 +43,13 @@ def test_active_noncritical_bitfield_is_alert():
     assert np.state_for("bitfield", "Guardian/Check Engine", True) == "alert"
 
 
-def test_faults_are_alert_empty_allowlist():
+def test_faults_policy_by_allowlist():
+    # Non-critical / unknown fault keys stay silent alert when active.
     assert np.state_for("fault", "1111-Legacy", True) == "alert"
+    assert np.state_for("fault", "946-6", True) == "alert"
+    # Seeded critical codes are audible alarms.
+    assert np.state_for("fault", "1109-23", True) == "alarm"
+    assert np.state_for("fault", "4602-23", True) == "alarm"
 
 
 def test_mil_kind_is_alert_when_active():

@@ -11,7 +11,9 @@ from vvm_to_signalk.signalk_publisher import SignalKPublisher, SignalKConfig
 from vvm_to_signalk.notification_policy import (
     CRITICAL_GUARDIAN_CAUSES,
     CRITICAL_BITFIELD_FLAGS,
+    CRITICAL_FAULT_KEYS,
 )
+from vvm_to_signalk.fault_decoder import FAULT_TEXT
 
 METHOD = {"alarm": ["visual", "sound"], "alert": ["visual"], "normal": []}
 
@@ -159,3 +161,18 @@ def test_allowlist_labels_exist_in_dictionary():
     bit_names = set(D.by_id(97).render_bits(0xFF).keys())
     assert CRITICAL_BITFIELD_FLAGS <= bit_names, \
         f"stale bitfield labels: {CRITICAL_BITFIELD_FLAGS - bit_names}"
+
+
+def test_universal_critical_fault_is_audible():
+    pub, ws = _fresh_pub()
+    asyncio.run(pub.accept_fault(Fault("Universal", 1, True, 1109, failure_type_id=23)))
+    v = _delta_ending(ws, "vvmFault.1109-23")
+    assert v["state"] == "alarm"
+    assert v["method"] == ["visual", "sound"]
+
+
+def test_critical_fault_keys_have_text():
+    # Every audible fault code must have known offline text (catches a typo in
+    # either the allowlist or FAULT_TEXT).
+    missing = CRITICAL_FAULT_KEYS - set(FAULT_TEXT)
+    assert not missing, f"critical fault keys missing text: {missing}"

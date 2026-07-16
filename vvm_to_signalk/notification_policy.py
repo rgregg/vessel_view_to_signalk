@@ -38,10 +38,8 @@ CRITICAL_BITFIELD_FLAGS = {
     "Coolant Temperature Fault",
 }
 
-# Universal/Legacy fault keys that warrant an audible alarm. Empty: fault
-# identity is opaque, so every fault is visual-only until specific keys are
-# curated in here.
-CRITICAL_FAULT_KEYS: set = set()
+# Universal fault codes (fault_key) recorded as critical in the native app.
+CRITICAL_FAULT_KEYS: set = {"1104-21", "1109-23", "3061-16", "4602-23"}
 
 _ALLOWLISTS = {
     "guardian": CRITICAL_GUARDIAN_CAUSES,
