@@ -53,6 +53,15 @@ def test_accept_fault_message_bare_code_when_unknown():
     delta = ws.sent[0]["updates"][0]["values"][0]
     assert "1111-Legacy" in delta["value"]["message"]
     assert delta["value"]["vvm"]["description"] is None
+    assert delta["value"]["vvm"]["advisory"] is None
+
+
+def test_accept_fault_includes_advisory_in_vvm():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
+    asyncio.run(pub.accept_fault(Fault("Universal", 1, True, 1104, failure_type_id=21)))
+    v = ws.sent[0]["updates"][0]["values"][0]["value"]
+    assert v["vvm"]["advisory"].startswith("Drive lube is low")
 
 
 class FakeItem:

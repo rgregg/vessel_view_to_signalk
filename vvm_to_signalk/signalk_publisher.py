@@ -263,6 +263,7 @@ class SignalKPublisher:
             "severity": fault.severity,
             "type": fault.fault_type,
             "description": description,
+            "advisory": fault.advisory,
         }
         await self._send_notification(
             path,
