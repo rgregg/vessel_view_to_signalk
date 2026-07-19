@@ -39,6 +39,7 @@ class BleDeviceConnection:
         self._active_engine_ids = None   # set from data-item 10000
         self._last_active_ids = None     # set from runtime channel-map parse
         self._unparsed_seen = set()      # channel keys already warned about this connection
+        self._unknown_fault_seen = set() # unknown fault_keys already warned about this connection
         # Fault Alert (0x201) subscription fallback state (in-memory, per process run).
         self._fault_subscribe_disabled = False  # set True after a subscribe drops the link
         self._fault_subscribe_pending = False   # True only between attempting and confirming
@@ -438,6 +439,7 @@ class BleDeviceConnection:
         """Clear the per-connection memory of already-warned channel data so a
         fresh connection re-surfaces any still-undecodable notifications."""
         self._unparsed_seen.clear()
+        self._unknown_fault_seen.clear()
 
     def _log_unparsed_channel_data(self, uuid: str, data: bytes):
         """Surface a channel notification we couldn't decode, once per distinct
@@ -478,9 +480,25 @@ class BleDeviceConnection:
         if fault is None:
             return
         logger.info("Fault received: %s", fault)
+        if fault.description is None:
+            self._log_unknown_fault(fault, data)
         loop = asyncio.get_event_loop()
         for receiver in self.__data_receivers:
             self._track_task(loop.create_task(receiver.accept_fault(fault)))
+
+    def _log_unknown_fault(self, fault, data: bytes):
+        """Warn once per connection about a fault whose code has no text in
+        FAULT_TEXT, capturing the full decode + raw frame so a newly-seen code
+        can be recorded and added to the fault-text map."""
+        if fault.fault_key in self._unknown_fault_seen:
+            return
+        self._unknown_fault_seen.add(fault.fault_key)
+        logger.warning(
+            "Unknown fault code %s (no text) type=%s engine=%s active=%s "
+            "failureTypeId=%s severity=%s actionId=%s raw=%s",
+            fault.fault_key, fault.fault_type, fault.engine_position,
+            fault.is_active, fault.failure_type_id, fault.severity,
+            fault.action_id, data.hex())
 
     def _track_task(self, task: asyncio.Task):
         """Retain a strong reference to a fire-and-forget receiver task so it

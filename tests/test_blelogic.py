@@ -613,6 +613,57 @@ def test_retrieve_engine_identity_defaults_to_engine_1():
     assert seen == [4000, 4004, 4008, 4012]
 
 
+_FAULT_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
+
+
+def _universal_fault_frame(fault_id, failure, engine=1, active=True,
+                           severity=0, action=0):
+    """Build a 9-byte Universal fault frame (see fault_decoder/parse_fault)."""
+    packed = ((severity & 0x7) | ((action & 0x1FF) << 3)
+              | ((failure & 0x7F) << 35) | ((fault_id & 0xFFFF) << 42))
+    body = packed.to_bytes(8, "little")[:7]
+    return bytes([(engine << 4) | 0x1, 0x01 if active else 0x00]) + body
+
+
+def test_unknown_fault_code_logged_at_warning(caplog):
+    """A fault whose code has no text in FAULT_TEXT must be surfaced at WARNING
+    with the raw frame, so a newly-seen code is capturable at the deployed INFO
+    level (and survives a bump to WARNING)."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    frame = _universal_fault_frame(1234, 5)  # 1234-5 is not in FAULT_TEXT
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("Unknown fault code 1234-5" in m for m in msgs), msgs
+    assert any(frame.hex() in m for m in msgs), msgs
+
+
+def test_known_fault_code_not_warned(caplog):
+    """A fault whose code has text (946-6) must NOT trigger the unknown-code
+    warning."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    frame = _universal_fault_frame(946, 6)  # 946-6 has text
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+    assert not any("Unknown fault code" in r.getMessage() for r in caplog.records)
+
+
+def test_unknown_fault_code_deduped_per_connection(caplog):
+    """The same unknown code must warn only once per connection so a re-firing
+    fault doesn't flood the log."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    frame = _universal_fault_frame(1234, 5)
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+    warnings = [r for r in caplog.records
+                if "Unknown fault code 1234-5" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr)
     logging.getLogger().setLevel(logging.DEBUG)
