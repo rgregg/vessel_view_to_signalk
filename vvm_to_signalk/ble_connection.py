@@ -653,20 +653,26 @@ class BleDeviceConnection:
         """
 
         logger.debug("triggering event listener for %s with data: %s", uuid, data)
+        # A request registers its future under exactly one keying scheme: the
+        # bare UUID (future_data_for_uuid) or UUID+first-byte (paged/multi-part
+        # responses). Try both, but only warn when NEITHER matches — otherwise a
+        # frame correctly matched by one scheme logs a spurious "unmatched"
+        # warning for the scheme it never used (~15 per connect during the
+        # config/identity handshake).
         matched = self.__notification_queue.trigger(uuid, data)
-        if not matched:
-            logger.warning("Unmatched data for UUID %s with data %s", uuid, data)
-        
-        # handle promises for data based on the uuid + first byte of the response if raw data
+
+        # Also match on the uuid + first byte of the response (paged/multi-part).
         if raw_bytes_from_device:
             try:
                 key_id = f"{uuid}+{int(data[0])}"
                 logger.debug("triggering notification handler on id: %s", key_id)
-                matched = self.__notification_queue.trigger(key_id, data)
-                if not matched:
-                    logger.warning("Unmatched data for %s with data %s", key_id, data.hex())
+                matched = self.__notification_queue.trigger(key_id, data) or matched
             except Exception as e:
                 logger.warning("Exception triggering notification: %s", e)
+
+        if not matched:
+            logger.warning("Unmatched data on %s: %s", uuid,
+                           data.hex() if isinstance(data, (bytes, bytearray)) else data)
 
     async def _read_char(self, client: BleakClient, uuid: str):
         """

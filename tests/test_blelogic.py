@@ -613,6 +613,48 @@ def test_retrieve_engine_identity_defaults_to_engine_1():
     assert seen == [4000, 4004, 4008, 4012]
 
 
+_CONFIG_UUID = "00000001-0000-1000-8000-ec55f9f5b963"
+
+
+def test_keyed_future_match_does_not_warn(caplog):
+    """A config/UserVar frame matched by the uuid+firstbyte future scheme must
+    NOT log an 'Unmatched data' warning just because the bare-uuid scheme (which
+    this request never registered) had no listener."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn.future_data_for_uuid(_CONFIG_UUID, 0)  # register only uuid+0
+    data = bytes([0x00, 0x11, 0x22])            # first byte 0 -> matches uuid+0
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn._trigger_event_listener(_CONFIG_UUID, data, True)
+    assert not any("Unmatched data" in r.getMessage() for r in caplog.records), \
+        [r.getMessage() for r in caplog.records]
+
+
+def test_bare_uuid_match_does_not_warn(caplog):
+    """A frame matched by the bare-uuid future scheme must not warn for the
+    uuid+firstbyte scheme that this request never registered."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn.future_data_for_uuid(_CONFIG_UUID)  # register bare uuid only
+    data = bytes([0x00, 0x0d, 0x01])
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn._trigger_event_listener(_CONFIG_UUID, data, True)
+    assert not any("Unmatched data" in r.getMessage() for r in caplog.records), \
+        [r.getMessage() for r in caplog.records]
+
+
+def test_truly_unmatched_frame_warns_once(caplog):
+    """A frame matching NEITHER scheme (no pending future) is genuinely
+    unsolicited and must still warn exactly once."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    data = bytes([0x00, 0x0d, 0x01])  # nothing registered
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn._trigger_event_listener(_CONFIG_UUID, data, True)
+    warnings = [r for r in caplog.records if "Unmatched data" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
 _FAULT_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
 
 
