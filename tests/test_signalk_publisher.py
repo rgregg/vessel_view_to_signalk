@@ -22,8 +22,8 @@ def test_accept_fault_emits_notification():
     asyncio.run(pub.accept_fault(fault))
     delta = ws.sent[0]["updates"][0]["values"][0]
     assert delta["path"] == "notifications.propulsion.starboard.vvmFault.1111-Legacy"
-    assert delta["value"]["state"] == "alarm"
-    assert delta["value"]["method"] == ["visual", "sound"]
+    assert delta["value"]["state"] == "alert"
+    assert delta["value"]["method"] == ["visual"]
     assert delta["value"]["vvm"]["faultId"] == 1111
 
 
@@ -41,9 +41,9 @@ def test_accept_fault_message_includes_known_description():
     ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
     asyncio.run(pub.accept_fault(Fault("Universal", 1, True, 946, failure_type_id=6)))
     delta = ws.sent[0]["updates"][0]["values"][0]
-    assert "Emissions Control Fault" in delta["value"]["message"]
+    assert "Catalyst oxygen storage capacity (starboard)" in delta["value"]["message"]
     assert "946-6" in delta["value"]["message"]
-    assert delta["value"]["vvm"]["description"] == "Emissions Control Fault"
+    assert delta["value"]["vvm"]["description"] == "Catalyst oxygen storage capacity (starboard)"
 
 
 def test_accept_fault_message_bare_code_when_unknown():
@@ -53,6 +53,15 @@ def test_accept_fault_message_bare_code_when_unknown():
     delta = ws.sent[0]["updates"][0]["values"][0]
     assert "1111-Legacy" in delta["value"]["message"]
     assert delta["value"]["vvm"]["description"] is None
+    assert delta["value"]["vvm"]["advisory"] is None
+
+
+def test_accept_fault_includes_advisory_in_vvm():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
+    asyncio.run(pub.accept_fault(Fault("Universal", 1, True, 1104, failure_type_id=21)))
+    v = ws.sent[0]["updates"][0]["values"][0]["value"]
+    assert v["vvm"]["advisory"] == "Drive lube is low. Continued operation may cause damage."
 
 
 class FakeItem:
@@ -184,15 +193,18 @@ def test_seven_function_gauge_emits_per_flag():
     ws = WS()
     p._SignalKPublisher__websocket = ws
     p.socket_connected = True
-    asyncio.run(p.accept_engine_data(D.by_id(97), 1, 0b00100))
+    # bit 7 = Coolant Temperature Fault (critical), bit 2 = Guardian/Check Engine (not seeded)
+    asyncio.run(p.accept_engine_data(D.by_id(97), 1, (1 << 7) | (1 << 2)))
     paths = {u["updates"][0]["values"][0]["path"]: u["updates"][0]["values"][0]["value"]
              for u in ws.sent}
-    assert "notifications.propulsion.starboard.guardianCheckEngine" in paths
-    assert paths["notifications.propulsion.starboard.guardianCheckEngine"]["state"] == "alarm"
+    assert paths["notifications.propulsion.starboard.coolantTemperatureFault"]["state"] == "alarm"
+    assert paths["notifications.propulsion.starboard.coolantTemperatureFault"]["method"] == ["visual", "sound"]
+    assert paths["notifications.propulsion.starboard.guardianCheckEngine"]["state"] == "alert"
+    assert paths["notifications.propulsion.starboard.guardianCheckEngine"]["method"] == ["visual"]
     assert paths["notifications.propulsion.starboard.oilFault"]["state"] == "normal"
 
 
-def test_mil_on_emits_alarm():
+def test_mil_on_emits_alert():
     p = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
     from vvm_to_signalk.data_dictionary import DataDictionary
     D = DataDictionary.load()
@@ -207,8 +219,27 @@ def test_mil_on_emits_alarm():
     asyncio.run(p.accept_engine_data(D.by_id(106), 1, 1))  # MIL Constant On
     v = ws.sent[0]["updates"][0]["values"][0]
     assert v["path"] == "notifications.propulsion.starboard.malfunctionIndicatorLightMilData"
-    assert v["value"]["state"] == "alarm"
+    assert v["value"]["state"] == "alert"
+    assert v["value"]["method"] == ["visual"]
     assert v["value"]["message"].endswith("MIL Constant On")
+
+
+def test_guardian_cause_noncritical_emits_alert():
+    p = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    from vvm_to_signalk.data_dictionary import DataDictionary
+    D = DataDictionary.load()
+
+    class WS:
+        def __init__(self): self.sent = []
+        async def send(self, m): self.sent.append(json.loads(m))
+
+    ws = WS()
+    p._SignalKPublisher__websocket = ws
+    p.socket_connected = True
+    asyncio.run(p.accept_engine_data(D.by_id(87), 1, 7))  # GC_BREAKIN (not seeded)
+    v = ws.sent[0]["updates"][0]["values"][0]["value"]
+    assert v["state"] == "alert"
+    assert v["method"] == ["visual"]
 
 
 def test_notification_deduped_until_state_changes():
@@ -229,6 +260,31 @@ def test_notification_deduped_until_state_changes():
     assert len(ws.sent) == 1
     asyncio.run(p.accept_engine_data(item, 1, 0))  # state change -> sent
     assert len(ws.sent) == 2
+
+
+def test_accept_engine_identity_publishes_delta():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = True
+    asyncio.run(pub.accept_engine_identity(1, "softwareId", "8M0107498"))
+    delta = ws.sent[0]["updates"][0]["values"][0]
+    assert delta["path"] == "propulsion.starboard.vvm.softwareId"
+    assert delta["value"] == "8M0107498"
+
+
+def test_accept_engine_identity_not_connected_is_silent():
+    pub = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); pub._SignalKPublisher__websocket = ws; pub.socket_connected = False
+    asyncio.run(pub.accept_engine_identity(1, "serialNumber", "0V123456"))
+    assert ws.sent == []
+
+
+def test_send_notification_alert_is_visual_only():
+    p = SignalKPublisher(SignalKConfig({"websocket-url": "ws://x"}), {})
+    ws = FakeWS(); p._SignalKPublisher__websocket = ws; p.socket_connected = True
+    asyncio.run(p._send_notification("notifications.test.path", "alert", "hi"))
+    v = ws.sent[0]["updates"][0]["values"][0]["value"]
+    assert v["state"] == "alert"
+    assert v["method"] == ["visual"]
 
 
 if __name__ == '__main__':

@@ -457,6 +457,253 @@ class Test_FaultSubscribeOrdering(unittest.IsolatedAsyncioTestCase):
             await conn._device_init_and_loop("fake-device")
 
         assert order == ["stream", "fault"], order
+NEXT_UUID = "00000111-0000-1000-8000-ec55f9f5b963"
+
+
+def _page0(item_id, total_len, chunk):
+    """Build a UserVar page-0 frame: [00][id:2 LE][msgType=01][len:2 LE][chunk]."""
+    return (bytes([0x00]) + item_id.to_bytes(2, "little") + bytes([0x01])
+            + total_len.to_bytes(2, "little") + chunk)
+
+
+def test_decode_uservar_string_strips_nuls():
+    from vvm_to_signalk.ble_connection import BleDeviceConnection
+    assert BleDeviceConnection._decode_uservar_string(b"1.0.0.0\x00\x00") == "1.0.0.0"
+
+
+def test_feed_paged_read_single_page():
+    """A string that fits in page 0 resolves the future with exactly len bytes."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(_page0(4000, 5, b"ABCDE"))
+    assert fut.done() and fut.result() == b"ABCDE"
+
+
+def test_feed_paged_read_multi_page():
+    """A string split across pages is reassembled from page 0 + continuations."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(_page0(4000, 10, b"ABCD"))   # 4 of 10 bytes
+    assert not fut.done()
+    conn._feed_paged_read(bytes([0x01]) + b"EFGH")      # +4 -> 8
+    assert not fut.done()
+    conn._feed_paged_read(bytes([0x02]) + b"IJ")        # +2 -> 10
+    assert fut.done() and fut.result() == b"ABCDEFGHIJ"
+
+
+def test_feed_paged_read_id_mismatch_resolves_none():
+    """A page-0 whose item id doesn't match the request resolves None."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(_page0(9999, 5, b"ABCDE"))
+    assert fut.done() and fut.result() is None
+
+
+def test_feed_paged_read_short_page0_resolves_none():
+    """A page-0 frame shorter than the 6-byte header resolves the read to None."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn._feed_paged_read(bytes([0x00, 0xA0, 0x0F]))  # 3 bytes < 6
+    assert fut.done() and fut.result() is None
+
+
+def test_read_uservar_string_end_to_end():
+    """_read_uservar_string writes the request and returns the assembled string
+    once the (faked) device feeds its pages."""
+    conn = _fresh_conn()
+
+    class FakeClient:
+        def __init__(self, c):
+            self._c = c
+            self.notified = None
+        async def start_notify(self, uuid, _handler):
+            self.notified = uuid
+        async def stop_notify(self, uuid):
+            pass
+        async def write_gatt_char(self, uuid, data, response=True):
+            # Device replies with a two-page "SW-12345" value (8 bytes).
+            self._c._feed_paged_read(_page0(4000, 8, b"SW-1"))
+            self._c._feed_paged_read(bytes([0x01]) + b"2345")
+
+    client = FakeClient(conn)
+    result = asyncio.get_event_loop().run_until_complete(
+        conn._read_uservar_string(client, 4000))
+    assert result == "SW-12345"
+    assert client.notified == NEXT_UUID
+
+
+def test_paged_read_routed_from_notification_handler():
+    """When a paged read is active, 0x111 notifications feed the accumulator
+    instead of the futures path."""
+    conn = _fresh_conn()
+    fut = asyncio.get_event_loop().create_future()
+    conn._paged_read = {"item_id": 4000, "buffer": bytearray(),
+                        "expected_len": None, "future": fut}
+    conn.notification_handler(FakeChar(NEXT_UUID), bytearray(_page0(4000, 3, b"XYZ")))
+    assert fut.done() and fut.result() == b"XYZ"
+
+
+class _FakeIdentityReceiver:
+    """Receiver that captures accept_engine_identity calls."""
+    def __init__(self):
+        self.calls = []
+    async def accept_engine_identity(self, engine_id, kind, value):
+        self.calls.append((engine_id, kind, value))
+
+
+def test_retrieve_engine_identity_reads_four_items_and_dispatches():
+    """For each active engine, reads Software/Calibration/Serial/ECU-Serial by the
+    correct item ids and dispatches them to receivers."""
+    conn = _fresh_conn()
+    conn._active_engine_ids = {1}
+    rx = _FakeIdentityReceiver()
+    conn.accept_data_receiver(rx)
+    reads = {4000: "SW1", 4004: "CAL1", 4008: "SER1", 4012: "ECU1"}
+
+    async def fake_read(client, item_id, *a, **k):
+        return reads.get(item_id)
+    conn._read_uservar_string = fake_read
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(conn._retrieve_engine_identity(None))
+    loop.run_until_complete(asyncio.sleep(0))  # let dispatch tasks run
+    assert (1, "softwareId", "SW1") in rx.calls
+    assert (1, "calibrationId", "CAL1") in rx.calls
+    assert (1, "serialNumber", "SER1") in rx.calls
+    assert (1, "ecuSerialNumber", "ECU1") in rx.calls
+
+
+def test_retrieve_engine_identity_skips_missing_and_never_raises():
+    """A read that returns None is skipped; the step does not raise."""
+    conn = _fresh_conn()
+    conn._active_engine_ids = {1}
+    rx = _FakeIdentityReceiver()
+    conn.accept_data_receiver(rx)
+
+    async def fake_read(client, item_id, *a, **k):
+        return None
+    conn._read_uservar_string = fake_read
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(conn._retrieve_engine_identity(None))
+    loop.run_until_complete(asyncio.sleep(0))
+    assert rx.calls == []
+
+
+def test_retrieve_engine_identity_defaults_to_engine_1():
+    """With no known active engines, defaults to engine 1 (item ids 4000/4004/4008/4012)."""
+    conn = _fresh_conn()
+    conn._active_engine_ids = None
+    seen = []
+
+    async def fake_read(client, item_id, *a, **k):
+        seen.append(item_id)
+        return None
+    conn._read_uservar_string = fake_read
+
+    asyncio.get_event_loop().run_until_complete(conn._retrieve_engine_identity(None))
+    assert seen == [4000, 4004, 4008, 4012]
+
+
+_CONFIG_UUID = "00000001-0000-1000-8000-ec55f9f5b963"
+
+
+def test_keyed_future_match_does_not_warn(caplog):
+    """A config/UserVar frame matched by the uuid+firstbyte future scheme must
+    NOT log an 'Unmatched data' warning just because the bare-uuid scheme (which
+    this request never registered) had no listener."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn.future_data_for_uuid(_CONFIG_UUID, 0)  # register only uuid+0
+    data = bytes([0x00, 0x11, 0x22])            # first byte 0 -> matches uuid+0
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn._trigger_event_listener(_CONFIG_UUID, data, True)
+    assert not any("Unmatched data" in r.getMessage() for r in caplog.records), \
+        [r.getMessage() for r in caplog.records]
+
+
+def test_bare_uuid_match_does_not_warn(caplog):
+    """A frame matched by the bare-uuid future scheme must not warn for the
+    uuid+firstbyte scheme that this request never registered."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    conn.future_data_for_uuid(_CONFIG_UUID)  # register bare uuid only
+    data = bytes([0x00, 0x0d, 0x01])
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn._trigger_event_listener(_CONFIG_UUID, data, True)
+    assert not any("Unmatched data" in r.getMessage() for r in caplog.records), \
+        [r.getMessage() for r in caplog.records]
+
+
+def test_truly_unmatched_frame_warns_once(caplog):
+    """A frame matching NEITHER scheme (no pending future) is genuinely
+    unsolicited and must still warn exactly once."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    data = bytes([0x00, 0x0d, 0x01])  # nothing registered
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn._trigger_event_listener(_CONFIG_UUID, data, True)
+    warnings = [r for r in caplog.records if "Unmatched data" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
+_FAULT_UUID = "00000201-0000-1000-8000-ec55f9f5b963"
+
+
+def _universal_fault_frame(fault_id, failure, engine=1, active=True,
+                           severity=0, action=0):
+    """Build a 9-byte Universal fault frame (see fault_decoder/parse_fault)."""
+    packed = ((severity & 0x7) | ((action & 0x1FF) << 3)
+              | ((failure & 0x7F) << 35) | ((fault_id & 0xFFFF) << 42))
+    body = packed.to_bytes(8, "little")[:7]
+    return bytes([(engine << 4) | 0x1, 0x01 if active else 0x00]) + body
+
+
+def test_unknown_fault_code_logged_at_warning(caplog):
+    """A fault whose code has no text in FAULT_TEXT must be surfaced at WARNING
+    with the raw frame, so a newly-seen code is capturable at the deployed INFO
+    level (and survives a bump to WARNING)."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    frame = _universal_fault_frame(1234, 5)  # 1234-5 is not in FAULT_TEXT
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("Unknown fault code 1234-5" in m for m in msgs), msgs
+    assert any(frame.hex() in m for m in msgs), msgs
+
+
+def test_known_fault_code_not_warned(caplog):
+    """A fault whose code has text (946-6) must NOT trigger the unknown-code
+    warning."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    frame = _universal_fault_frame(946, 6)  # 946-6 has text
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+    assert not any("Unknown fault code" in r.getMessage() for r in caplog.records)
+
+
+def test_unknown_fault_code_deduped_per_connection(caplog):
+    """The same unknown code must warn only once per connection so a re-firing
+    fault doesn't flood the log."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    conn = BleDeviceConnection(BleConnectionConfig({"name": "x"}), {})
+    frame = _universal_fault_frame(1234, 5)
+    with caplog.at_level(logging.WARNING, logger="vvm_to_signalk.ble_connection"):
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+        conn.notification_handler(FakeChar(_FAULT_UUID), bytearray(frame))
+    warnings = [r for r in caplog.records
+                if "Unknown fault code 1234-5" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
 
 
 if __name__ == "__main__":

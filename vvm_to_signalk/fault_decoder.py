@@ -1,16 +1,46 @@
 """Decode VVM Fault Alert (0x201) indications. See docs/protocol-map.md §3."""
 import logging
+from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
 _FAULT_TYPES = {0: "Unknown", 1: "Universal", 2: "Legacy"}
 
-# Human-readable text for known fault codes, keyed by `fault_key`. Mercury
-# resolves fault text through a cloud API (protocol-map.md §3.5) with no offline
-# dictionary, so this is a hand-maintained map of codes identified from the
-# native app. Unknown codes fall back to the bare key.
+FaultText = namedtuple("FaultText", ["title", "advisory"])
+
+# Offline fault text recorded from the native SmartCraft app. Mercury resolves
+# fault text through a cloud API (protocol-map.md §3.5) with no offline
+# dictionary, so this is a hand-maintained map of Universal codes keyed by
+# `fault_key` = "<fault_id>-<failure_type_id>". `title` is shown in the
+# notification message; `advisory` (the app's actionable Line-3 text) is carried
+# in the SignalK vvm block and is None when the app shows none. Unknown codes
+# fall back to the bare key.
 FAULT_TEXT = {
-    "946-6": "Emissions Control Fault",
+    "946-6": FaultText("Catalyst oxygen storage capacity (starboard)", None),
+    "1104-21": FaultText(
+        "Drive lube",
+        "Drive lube is low. Continued operation may cause damage."),
+    "3151-16": FaultText(
+        "Malfunction indicator lamp",
+        "Malfunction indicator lamp is not working properly."),
+    "1109-23": FaultText(
+        "Emergency stop",
+        "Check lanyard - key engine off and restart. If condition persists, "
+        "service engine soon."),
+    "4602-23": FaultText(
+        "Fault blocker system voltage",
+        "Return to port immediately - turn off unnecessary loads and check "
+        "battery connections. Service engine before next use."),
+    "3061-16": FaultText(
+        "Fuel pump",
+        "Fuel pump is not working properly. Return to port immediately - "
+        "service engine before next use."),
+    "842-16": FaultText(
+        "Wideband O2 sensor heater - starboard bank (S1)",
+        "Exhaust oxygen sensor is not working properly."),
+    "822-16": FaultText(
+        "Wideband O2 sensor heater - port bank (S1)",
+        "Exhaust oxygen sensor is not working properly."),
 }
 
 
@@ -41,8 +71,15 @@ class Fault:
 
     @property
     def description(self) -> str | None:
-        """Human-readable text for this fault code, or None if not in FAULT_TEXT."""
-        return FAULT_TEXT.get(self.fault_key)
+        """Title text for this fault code, or None if not in FAULT_TEXT."""
+        entry = FAULT_TEXT.get(self.fault_key)
+        return entry.title if entry else None
+
+    @property
+    def advisory(self) -> str | None:
+        """Actionable advisory text for this fault code, or None."""
+        entry = FAULT_TEXT.get(self.fault_key)
+        return entry.advisory if entry else None
 
 
 def _common_header(data: bytes):

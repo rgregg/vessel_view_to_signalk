@@ -8,9 +8,11 @@ import websockets
 
 from .futures_queue import FuturesQueue
 from .signalk_mapping import signalk_path, to_si, engine_label, _camel
+from .notification_policy import method_for, state_for
 
 _OFFLINE_FAULT_IDS = {87, 106}     # enum-style single alarm (Guardian Cause, MIL)
 _BITFIELD_FAULT_IDS = {97}         # one notification per bit (Seven Function Gauge)
+_GUARDIAN_CAUSE_ID = 87            # enum path: distinguishes Guardian (87) from MIL (106)
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +201,7 @@ class SignalKPublisher:
         if not self.socket_connected:
             return
         value = {"state": state,
-                 "method": ["visual", "sound"] if state == "alarm" else [],
+                 "method": method_for(state),
                  "message": message}
         if extra:
             value["vvm"] = extra
@@ -214,17 +216,18 @@ class SignalKPublisher:
         label = engine_label(engine_id, self.__config.engine_labels)
         if item.id in _OFFLINE_FAULT_IDS:
             text = item.render_enum(value) or str(int(value))
-            inactive = int(value) == 0  # 0 == GC_NONE / MIL Off
+            is_active = int(value) != 0  # 0 == GC_NONE / MIL Off
+            kind = "guardian" if item.id == _GUARDIAN_CAUSE_ID else "mil"
             await self._send_notification(
                 f"notifications.propulsion.{label}.{_camel(item.name)}",
-                "normal" if inactive else "alarm",
+                state_for(kind, text, is_active),
                 f"Engine {engine_id} {item.name}: {text}")
             return
         if item.id in _BITFIELD_FAULT_IDS:
             for flag_name, flag_val in item.render_bits(value).items():
                 await self._send_notification(
                     f"notifications.propulsion.{label}.{_camel(flag_name)}",
-                    "alarm" if flag_val else "normal",
+                    state_for("bitfield", flag_name, bool(flag_val)),
                     f"Engine {engine_id} {flag_name}: {'active' if flag_val else 'clear'}")
             return
         path = signalk_path(item, engine_id, self.__config.engine_labels,
@@ -244,7 +247,8 @@ class SignalKPublisher:
                 logger.warning("Error sending on websocket: %s", e)
 
     async def accept_fault(self, fault):
-        """Publish a fault as a SignalK notification delta."""
+        """Publish a fault as a SignalK notification delta (quiet-by-default:
+        faults are visual-only unless their key is on the critical allowlist)."""
         label = engine_label(fault.engine_position, self.__config.engine_labels)
         path = f"notifications.propulsion.{label}.vvmFault.{fault.fault_key}"
         description = fault.description
@@ -253,23 +257,30 @@ class SignalKPublisher:
             message += f": {description}"
         if not fault.is_active:
             message += " cleared"
-        value = {
-            "state": "alarm" if fault.is_active else "normal",
-            "method": ["visual", "sound"] if fault.is_active else [],
-            "message": message,
-            "vvm": {
-                "faultId": fault.fault_id,
-                "failureTypeId": fault.failure_type_id,
-                "severity": fault.severity,
-                "type": fault.fault_type,
-                "description": description,
-            },
+        extra = {
+            "faultId": fault.fault_id,
+            "failureTypeId": fault.failure_type_id,
+            "severity": fault.severity,
+            "type": fault.fault_type,
+            "description": description,
+            "advisory": fault.advisory,
         }
+        await self._send_notification(
+            path,
+            state_for("fault", fault.fault_key, fault.is_active),
+            message,
+            extra=extra)
+
+    async def accept_engine_identity(self, engine_id, kind, value):
+        """Publish an engine identity string (Software/Calibration/Serial/ECU IDs)
+        as a SignalK metadata delta at propulsion.<label>.vvm.<kind>."""
+        label = engine_label(engine_id, self.__config.engine_labels)
+        path = f"propulsion.{label}.vvm.{kind}"
         if self.socket_connected:
             try:
                 await self.__websocket.send(json.dumps(self.generate_delta(path, value)))
             except Exception as e:
-                logger.warning("Error sending fault on websocket: %s", e)
+                logger.warning("Error sending engine identity on websocket: %s", e)
 
 
 class SignalKConfig:

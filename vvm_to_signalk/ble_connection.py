@@ -39,9 +39,12 @@ class BleDeviceConnection:
         self._active_engine_ids = None   # set from data-item 10000
         self._last_active_ids = None     # set from runtime channel-map parse
         self._unparsed_seen = set()      # channel keys already warned about this connection
+        self._unknown_fault_seen = set() # unknown fault_keys already warned about this connection
         # Fault Alert (0x201) subscription fallback state (in-memory, per process run).
         self._fault_subscribe_disabled = False  # set True after a subscribe drops the link
         self._fault_subscribe_pending = False   # True only between attempting and confirming
+        # Active paged UserVar string read (protocol-map §4); None when idle.
+        self._paged_read = None
 
     def accept_data_receiver(self, receiver: EngineDataReceiver) -> None:
         """Add a new data receiver to the collection"""
@@ -138,7 +141,14 @@ class BleDeviceConnection:
                     
                 logger.info("Initalizing VVM...")
                 await self._initalize_vvm(client)
-                    
+
+                # Best-effort engine identity read (Software/Calibration/Serial IDs).
+                # Runs before streaming, matching the app; must never abort the connect.
+                try:
+                    await self._retrieve_engine_identity(client)
+                except Exception as e:
+                    logger.warning("Engine identity read step failed: %s", e)
+
                 logger.info("Configuring data streaming notifications...")
                 await self._setup_data_notifications(client)
                 await self._request_offline_fault_channels(client, self._last_active_ids or [])
@@ -304,6 +314,67 @@ class BleDeviceConnection:
             self._fault_subscribe_disabled = True
         self._fault_subscribe_pending = False
 
+    async def _read_uservar_string(self, client, item_id, timeout=2.0):
+        """Read a UserVar string item (protocol-map §4) via the paged protocol.
+
+        Reply pages arrive as notifications on 0x111, which the single-page config
+        reads leave disabled, so enable them for this exchange. Writes the 3-byte
+        request and lets notification_handler feed the reply pages into a per-read
+        accumulator. Returns the decoded string, or None on timeout / malformed
+        reply / id mismatch. Best-effort: never raises.
+        """
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self._paged_read = {"item_id": item_id, "buffer": bytearray(),
+                            "expected_len": None, "future": future}
+        try:
+            await client.start_notify(UUIDs.DEVICE_NEXT_UUID, self.notification_handler)
+            req = bytes([item_id & 0xFF, (item_id >> 8) & 0xFF, 0x00])
+            await client.write_gatt_char(UUIDs.DEVICE_NEXT_UUID, req, response=True)
+            raw = await asyncio.wait_for(future, timeout)
+        except Exception as e:
+            logger.warning("UserVar read of item %s failed: %s", item_id, e)
+            return None
+        finally:
+            self._paged_read = None
+            try:
+                await client.stop_notify(UUIDs.DEVICE_NEXT_UUID)
+            except Exception:
+                pass
+        if raw is None:
+            return None
+        return self._decode_uservar_string(raw)
+
+    def _feed_paged_read(self, data: bytes):
+        """Feed one 0x111 page into the active paged read (protocol-map §4):
+        page 0 = [00][id:2 LE][msgType][len:2 LE][data...]; page N = [N][data...]."""
+        pr = self._paged_read
+        if pr is None:
+            return
+        future = pr["future"]
+        if future.done():
+            return
+        page = data[0] if data else -1
+        if page == 0:
+            if len(data) < 6:
+                future.set_result(None)
+                return
+            item_id = int.from_bytes(data[1:3], byteorder="little")
+            if item_id != pr["item_id"]:
+                future.set_result(None)
+                return
+            pr["expected_len"] = int.from_bytes(data[4:6], byteorder="little")
+            pr["buffer"].extend(data[6:])
+        else:
+            pr["buffer"].extend(data[1:])
+        if pr["expected_len"] is not None and len(pr["buffer"]) >= pr["expected_len"]:
+            future.set_result(bytes(pr["buffer"][:pr["expected_len"]]))
+
+    @staticmethod
+    def _decode_uservar_string(raw: bytes) -> str:
+        """Decode UserVar string bytes as ASCII, dropping trailing NULs/whitespace."""
+        return raw.decode("ascii", errors="replace").rstrip("\x00").strip()
+
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         """Handles BLE notifications and indications."""
         self.__last_message_time = asyncio.get_event_loop().time()
@@ -321,6 +392,10 @@ class BleDeviceConnection:
         # Config / UserVar exchanges are resolved via registered futures, not decoded
         # as channel data (avoids "unmatched data" noise on every engine notification).
         if uuid in (UUIDs.DEVICE_CONFIG_UUID, UUIDs.DEVICE_NEXT_UUID):
+            # An active paged UserVar string read consumes 0x111 pages directly.
+            if self._paged_read is not None and uuid == UUIDs.DEVICE_NEXT_UUID:
+                self._feed_paged_read(bytes(data))
+                return
             self._trigger_event_listener(uuid, data, True)
             return
 
@@ -337,10 +412,34 @@ class BleDeviceConnection:
                 continue
             self._publish_engine_value(item, engine_id, value)
 
+    async def _retrieve_engine_identity(self, client):
+        """Read engine identity strings (Software/Calibration/Serial/ECU-Serial IDs)
+        for active engines via UserVar (protocol-map §4), log them, and dispatch to
+        receivers. Best-effort: individual reads that fail are skipped."""
+        bases = (("softwareId", 4000), ("calibrationId", 4004),
+                 ("serialNumber", 4008), ("ecuSerialNumber", 4012))
+        engines = sorted(self._active_engine_ids) if self._active_engine_ids else [1]
+        for engine_id in engines:
+            for kind, base in bases:
+                item_id = base + (engine_id - 1)
+                value = await self._read_uservar_string(client, item_id)
+                if not value:
+                    continue
+                logger.info("Engine %s %s: %s", engine_id, kind, value)
+                self._dispatch_engine_identity(engine_id, kind, value)
+
+    def _dispatch_engine_identity(self, engine_id, kind, value):
+        """Dispatch one engine identity value to all registered receivers."""
+        loop = asyncio.get_event_loop()
+        for receiver in self.__data_receivers:
+            self._track_task(loop.create_task(
+                receiver.accept_engine_identity(engine_id, kind, value)))
+
     def _reset_unparsed_tracking(self):
         """Clear the per-connection memory of already-warned channel data so a
         fresh connection re-surfaces any still-undecodable notifications."""
         self._unparsed_seen.clear()
+        self._unknown_fault_seen.clear()
 
     def _log_unparsed_channel_data(self, uuid: str, data: bytes):
         """Surface a channel notification we couldn't decode, once per distinct
@@ -381,9 +480,25 @@ class BleDeviceConnection:
         if fault is None:
             return
         logger.info("Fault received: %s", fault)
+        if fault.description is None:
+            self._log_unknown_fault(fault, data)
         loop = asyncio.get_event_loop()
         for receiver in self.__data_receivers:
             self._track_task(loop.create_task(receiver.accept_fault(fault)))
+
+    def _log_unknown_fault(self, fault, data: bytes):
+        """Warn once per connection about a fault whose code has no text in
+        FAULT_TEXT, capturing the full decode + raw frame so a newly-seen code
+        can be recorded and added to the fault-text map."""
+        if fault.fault_key in self._unknown_fault_seen:
+            return
+        self._unknown_fault_seen.add(fault.fault_key)
+        logger.warning(
+            "Unknown fault code %s (no text) type=%s engine=%s active=%s "
+            "failureTypeId=%s severity=%s actionId=%s raw=%s",
+            fault.fault_key, fault.fault_type, fault.engine_position,
+            fault.is_active, fault.failure_type_id, fault.severity,
+            fault.action_id, data.hex())
 
     def _track_task(self, task: asyncio.Task):
         """Retain a strong reference to a fire-and-forget receiver task so it
@@ -422,6 +537,13 @@ class BleDeviceConnection:
         result = await self._request_configuration_data(client, UUIDs.DEVICE_NEXT_UUID, data)
         if (expected_result := '00102701010001') != result.hex():
             logger.warning("configuration_data_1 response: %s, expected: 00102701010001", result.hex())
+        # Response is a UserVar page-0 frame for item 10000 (Active Engines); the
+        # engine bitfield is the payload byte at index 6. Capture it so the engine
+        # identity reads target the right engines before streaming begins.
+        if len(result) >= 7:
+            bits = result[6]
+            self._active_engine_ids = {e for e in (1, 2, 3, 4) if bits & (1 << (e - 1))}
+            logger.info("Active engines: %s", sorted(self._active_engine_ids))
 
         data = bytes([0xCA, 0x0F, 0x0])
         expected_result = "00ca0f01010000"
@@ -531,20 +653,26 @@ class BleDeviceConnection:
         """
 
         logger.debug("triggering event listener for %s with data: %s", uuid, data)
+        # A request registers its future under exactly one keying scheme: the
+        # bare UUID (future_data_for_uuid) or UUID+first-byte (paged/multi-part
+        # responses). Try both, but only warn when NEITHER matches — otherwise a
+        # frame correctly matched by one scheme logs a spurious "unmatched"
+        # warning for the scheme it never used (~15 per connect during the
+        # config/identity handshake).
         matched = self.__notification_queue.trigger(uuid, data)
-        if not matched:
-            logger.warning("Unmatched data for UUID %s with data %s", uuid, data)
-        
-        # handle promises for data based on the uuid + first byte of the response if raw data
+
+        # Also match on the uuid + first byte of the response (paged/multi-part).
         if raw_bytes_from_device:
             try:
                 key_id = f"{uuid}+{int(data[0])}"
                 logger.debug("triggering notification handler on id: %s", key_id)
-                matched = self.__notification_queue.trigger(key_id, data)
-                if not matched:
-                    logger.warning("Unmatched data for %s with data %s", key_id, data.hex())
+                matched = self.__notification_queue.trigger(key_id, data) or matched
             except Exception as e:
                 logger.warning("Exception triggering notification: %s", e)
+
+        if not matched:
+            logger.warning("Unmatched data on %s: %s", uuid,
+                           data.hex() if isinstance(data, (bytes, bytearray)) else data)
 
     async def _read_char(self, client: BleakClient, uuid: str):
         """
