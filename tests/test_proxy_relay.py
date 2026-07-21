@@ -5,13 +5,21 @@ from vvm_to_signalk.proxy_relay import ProxyRelay
 
 
 class _FakeConn:
-    def __init__(self):
+    def __init__(self, read_values=None, write_error=None):
         self.observer = None
         self.writes = []
+        self.reads = []
+        self._read_values = read_values or {}
+        self._write_error = write_error
     def set_notification_observer(self, cb):
         self.observer = cb
     async def proxy_write(self, uuid, data, response=True):
+        if self._write_error is not None:
+            raise self._write_error
         self.writes.append((uuid, bytes(data)))
+    async def proxy_read(self, uuid):
+        self.reads.append(uuid)
+        return self._read_values.get(uuid, b"")
 
 
 class _FakePeripheral:
@@ -42,8 +50,8 @@ class _FakeService:
         self.characteristics = chars
 
 
-def _relay():
-    conn = _FakeConn()
+def _relay(conn=None):
+    conn = conn if conn is not None else _FakeConn()
     made = {}
     def pf(name, mirrored, on_write, on_read, **kw):
         p = _FakePeripheral(name, mirrored, on_write, on_read, **kw)
@@ -95,4 +103,33 @@ def test_lost_stops_peripheral_and_clears_observer():
         await relay.on_upstream_lost()
         assert made["p"].stopped is True
         assert conn.observer is None
+    asyncio.run(run())
+
+
+def test_readable_chars_are_prefetched_into_read_cache():
+    async def run():
+        conn = _FakeConn(read_values={"c1": b"MODEL-X"})
+        relay, conn, made = _relay(conn)
+        services = [_FakeService("svc", [
+            _FakeChar("c1", ["read"]),
+            _FakeChar("c2", ["notify"]),
+        ])]
+        await relay.on_upstream_ready(services)
+        assert relay._serve_read("c1") == b"MODEL-X"
+        assert "c1" in conn.reads
+        assert "c2" not in conn.reads
+    asyncio.run(run())
+
+
+def test_forward_write_failure_is_logged_not_raised(caplog):
+    async def run():
+        conn = _FakeConn(write_error=RuntimeError("boom"))
+        relay, conn, made = _relay(conn)
+        services = [_FakeService("svc", [_FakeChar("c1", ["write"])])]
+        await relay.on_upstream_ready(services)
+        with caplog.at_level("WARNING"):
+            made["p"].on_write("c1", b"\x42")   # should not raise
+            for _ in range(5):
+                await asyncio.sleep(0)
+        assert "proxy scheduled op failed" in caplog.text
     asyncio.run(run())
