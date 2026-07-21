@@ -1,8 +1,5 @@
 """Append-only capture of relayed BLE proxy traffic."""
-import logging
 from datetime import datetime, timezone
-
-logger = logging.getLogger(__name__)
 
 
 class TrafficCapture:
@@ -10,7 +7,6 @@ class TrafficCapture:
 
     def __init__(self, path: str, enabled: bool = True):
         self._enabled = enabled
-        self._path = path
         self._fh = None
         if self._enabled:
             self._fh = open(path, "a", encoding="utf-8")  # noqa: SIM115

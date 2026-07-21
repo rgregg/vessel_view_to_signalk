@@ -28,4 +28,5 @@ def test_empty_data_has_empty_hex(tmp_path):
     ts = datetime(2026, 7, 20, 0, 0, 0, tzinfo=timezone.utc)
     cap.record("app->vvm", "subscribe", "uuid", b"", now=ts)
     cap.close()
-    assert path.read_text().strip().endswith("subscribe uuid")
+    line = path.read_text().rstrip("\n")
+    assert line.endswith("subscribe uuid ")
