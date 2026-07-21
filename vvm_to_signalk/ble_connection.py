@@ -45,10 +45,33 @@ class BleDeviceConnection:
         self._fault_subscribe_pending = False   # True only between attempting and confirming
         # Active paged UserVar string read (protocol-map §4); None when idle.
         self._paged_read = None
+        self._active_client = None          # set while a BLE client is connected
+        self._notification_observer = None  # proxy fan-out callback (uuid, data)
 
     def accept_data_receiver(self, receiver: EngineDataReceiver) -> None:
         """Add a new data receiver to the collection"""
         self.__data_receivers.append(receiver)
+
+    def set_notification_observer(self, callback) -> None:
+        """Register a callback(uuid: str, data: bytes) invoked for every
+        notification, in addition to normal decoding. None clears it.
+        Used by the BLE proxy to forward the VVM stream to the native app."""
+        self._notification_observer = callback
+
+    async def proxy_write(self, uuid: str, data: bytes, response: bool = True) -> None:
+        """Write to the connected VVM on the app's behalf (proxy mode)."""
+        client = self._active_client
+        if client is None:
+            logger.warning("proxy_write dropped (no active VVM connection): %s", uuid)
+            return
+        await client.write_gatt_char(uuid, data, response=response)
+
+    async def proxy_read(self, uuid: str) -> bytes:
+        """Read a characteristic from the connected VVM (proxy mode)."""
+        client = self._active_client
+        if client is None:
+            raise RuntimeError("not connected")
+        return bytes(await client.read_gatt_char(uuid))
 
     @property
     def device_address(self):
@@ -134,6 +157,7 @@ class BleDeviceConnection:
 
                 self._set_health(True, "Connected to device")
                 connected = True
+                self._active_client = client
                 self._reset_unparsed_tracking()
 
                 logger.info("Retrieving device identification metadata...")
@@ -174,6 +198,7 @@ class BleDeviceConnection:
         except Exception as e:
             self._set_health(False, f"Device error: {e}")
         finally:
+            self._active_client = None
             self._finalize_fault_subscribe_state()
             if monitor_task:
                 monitor_task.cancel()
@@ -378,6 +403,12 @@ class BleDeviceConnection:
     def notification_handler(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         """Handles BLE notifications and indications."""
         self.__last_message_time = asyncio.get_event_loop().time()
+        observer = self._notification_observer
+        if observer is not None:
+            try:
+                observer(characteristic.uuid, bytes(data))
+            except Exception as e:  # never let the proxy break decoding
+                logger.warning("notification observer error: %s", e)
         uuid = characteristic.uuid
         # Guard the hex() conversion: this runs on every notification, so avoid
         # paying for it when debug logging is disabled.
