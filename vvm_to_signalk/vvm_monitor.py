@@ -13,6 +13,9 @@ from .ble_connection import BleConnectionConfig, BleDeviceConnection
 from .signalk_publisher import SignalKConfig, SignalKPublisher
 from .csv_writer import CsvWriter, CsvWriterConfig
 from .healthcheck import format_heartbeat
+from .proxy_config import ProxyConfig
+from .proxy_relay import ProxyRelay
+from .traffic_capture import TrafficCapture
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,14 @@ class VesselViewMobileDataRecorder:
                 self.__ble_connection.accept_data_receiver(self.__csv_writer)
         else:
             logger.warning("Skipping csv output - configuration is invalid.")
+
+        if self.__ble_connection is not None and config.proxy.valid:
+            capture = TrafficCapture(config.proxy.capture_file)
+            adv_name = config.proxy.advertised_name or config.bluetooth.device_name
+            relay = ProxyRelay(self.__ble_connection, config.proxy, adv_name,
+                               loop, capture=capture)
+            self.__ble_connection.set_proxy_relay(relay)
+            logger.info("BLE GATT proxy enabled (advertising as %s)", adv_name)
 
         background_tasks = set()
         async with asyncio.TaskGroup() as tg:
@@ -232,6 +243,7 @@ class VVMConfig:
         self._ble_config = BleConnectionConfig()
         self._signalk_config = SignalKConfig()
         self._csv_config = CsvWriterConfig()
+        self._proxy_config = ProxyConfig()
 
         self._logging_level = logging.INFO
         self._logging_file = "./logs/vvm_monitor.log"
@@ -250,6 +262,7 @@ class VVMConfig:
         self.signalk.read(data.get('signalk'))
         self.bluetooth.read(data.get('ble-device'))
         self.csv.read(data.get('csv'))
+        self.proxy.read(data.get('proxy'))
 
         if (log_config := data.get('logging')) is not None:
             if (level_str := log_config.get('level')) is not None:
@@ -288,6 +301,15 @@ class VVMConfig:
     @csv.setter
     def csv(self, value):
         self._csv_config = value
+
+    @property
+    def proxy(self):
+        """Configuration for the BLE GATT proxy mode."""
+        return self._proxy_config
+
+    @proxy.setter
+    def proxy(self, value):
+        self._proxy_config = value
 
     @property
     def logging_level(self):

@@ -96,6 +96,8 @@ class CsvWriterConfig:
 
     def read(self, data: dict):
         """Loads settings from a dictionary"""
+        if data is None:
+            return
         self.__enabled = data.get("enabled", self.__enabled)
         self.__filename = data.get("filename", self.__filename)
         self.__flush_interval = data.get("interval", self.__flush_interval)

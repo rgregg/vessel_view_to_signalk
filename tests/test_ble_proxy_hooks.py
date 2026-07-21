@@ -61,3 +61,25 @@ def test_proxy_read_without_client_raises():
         assert False, "expected RuntimeError"
     except RuntimeError:
         pass
+
+
+def test_set_proxy_relay_ready_and_lost_called():
+    import asyncio
+    conn = _make_conn()
+
+    class _Relay:
+        def __init__(self):
+            self.ready = None
+            self.lost = False
+        async def on_upstream_ready(self, services):
+            self.ready = services
+        async def on_upstream_lost(self):
+            self.lost = True
+
+    relay = _Relay()
+    conn.set_proxy_relay(relay)
+    # the connection exposes helpers the loop calls; test them directly
+    asyncio.run(conn._proxy_notify_ready(["svc"]))
+    assert relay.ready == ["svc"]
+    asyncio.run(conn._proxy_notify_lost())
+    assert relay.lost is True

@@ -47,6 +47,7 @@ class BleDeviceConnection:
         self._paged_read = None
         self._active_client = None          # set while a BLE client is connected
         self._notification_observer = None  # proxy fan-out callback (uuid, data)
+        self._proxy_relay = None            # ProxyRelay attached via set_proxy_relay
 
     def accept_data_receiver(self, receiver: EngineDataReceiver) -> None:
         """Add a new data receiver to the collection"""
@@ -72,6 +73,24 @@ class BleDeviceConnection:
         if client is None:
             raise RuntimeError("not connected")
         return bytes(await client.read_gatt_char(uuid))
+
+    def set_proxy_relay(self, relay) -> None:
+        """Attach a ProxyRelay to mirror the VVM link to the native app."""
+        self._proxy_relay = relay
+
+    async def _proxy_notify_ready(self, services) -> None:
+        if self._proxy_relay is not None:
+            try:
+                await self._proxy_relay.on_upstream_ready(services)
+            except Exception as e:
+                logger.warning("Proxy start failed (continuing without it): %s", e)
+
+    async def _proxy_notify_lost(self) -> None:
+        if self._proxy_relay is not None:
+            try:
+                await self._proxy_relay.on_upstream_lost()
+            except Exception as e:
+                logger.warning("Proxy stop error: %s", e)
 
     @property
     def device_address(self):
@@ -184,6 +203,7 @@ class BleDeviceConnection:
                 # enabled, mirroring the native app (btsnoop capture). Isolated so
                 # a device that rejects it disables faults but keeps streaming.
                 await self._subscribe_fault_alert(client)
+                await self._proxy_notify_ready(client.services)
 
                 # Start the streaming monitor if a timeout is configured
                 if self.__config.streaming_timeout > 0:
@@ -198,6 +218,7 @@ class BleDeviceConnection:
         except Exception as e:
             self._set_health(False, f"Device error: {e}")
         finally:
+            await self._proxy_notify_lost()
             self._active_client = None
             self._finalize_fault_subscribe_state()
             if monitor_task:

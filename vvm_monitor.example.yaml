@@ -22,5 +22,14 @@ csv:
   enabled: true
   filename: ./logs/data.csv
   interval: 1.0
-  
-  
+
+# Optional: BLE GATT proxy so the native SmartCraft app can connect through
+# this connector to the engine (the VVM only allows one BLE connection).
+# Default: disabled. Requires an adapter that supports concurrent
+# central+peripheral roles on one radio.
+proxy:
+  enabled: false
+  # File that captures all relayed BLE traffic (timestamped hex).
+  capture-file: ./logs/ble_capture.log
+  # Name to advertise to the app. Defaults to ble-device.name when omitted.
+  # advertised-name: "VVM_84FD27D92CBE"
