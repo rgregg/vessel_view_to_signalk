@@ -49,8 +49,9 @@
 
 Append to `requirements.txt`:
 ```
-bless==0.2.6
+bless==0.3.0
 ```
+(API verified against 0.3.0: `BlessServer(name, loop=None)`, `add_new_service(uuid)`, `add_new_characteristic(service_uuid, char_uuid, properties, value, permissions)`, `start()`/`stop()`/`update_value(service_uuid, char_uuid)` are async/bool, `read_request_func`/`write_request_func` are instance attrs. **`GATTCharacteristicProperties` and `GATTAttributePermissions` are plain `enum.Flag`, NOT `IntFlag`** — accumulate from `P(0)`/`Perm(0)`, never from int `0`.)
 
 - [ ] **Step 2: Write the spike tool**
 
@@ -432,8 +433,8 @@ def mirror_profile(services) -> list:
     for service in services:
         chars = []
         for characteristic in service.characteristics:
-            props = 0
-            perms = 0
+            props = P(0)      # enum.Flag empty; NOT int 0 (int | Flag raises TypeError)
+            perms = Perm(0)
             for name in characteristic.properties:
                 flag = _PROP_MAP.get(name)
                 if flag is not None:
