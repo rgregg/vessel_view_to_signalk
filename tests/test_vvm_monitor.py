@@ -160,3 +160,15 @@ def test_capture_bytes_produce_expected_values():
     assert rx.values[(1, 1)] == 600.0
     assert round(rx.values[(232, 1)], 3) == 14.523
     assert rx.faults and rx.faults[0].fault_key == "1111-Legacy"
+
+def test_vvmconfig_reads_proxy_section():
+    from vvm_to_signalk.vvm_monitor import VVMConfig
+    cfg = VVMConfig({"proxy": {"enabled": True, "advertised-name": "VVM_X"}})
+    assert cfg.proxy.enabled is True
+    assert cfg.proxy.advertised_name == "VVM_X"
+
+
+def test_vvmconfig_proxy_default_off():
+    from vvm_to_signalk.vvm_monitor import VVMConfig
+    cfg = VVMConfig({})
+    assert cfg.proxy.enabled is False
